@@ -204,7 +204,6 @@ class DailyStreamApp(rumps.App):
 
         # Try loading workspace_meta.json directly from selected folder,
         # or find the latest workspace subdirectory inside it
-        from pathlib import Path
         target = Path(folder)
 
         # If selected folder itself has workspace_meta.json, load it
@@ -224,7 +223,7 @@ class DailyStreamApp(rumps.App):
         if self.wm.load(ws_dir):
             # Re-activate it (mark as active again)
             self.wm.meta.ended_at = None
-            self.wm._save_meta()
+            self.wm.save_meta()
             set_active_workspace_path(ws_dir)
             self.pm = PipelineManager(ws_dir)
             self._rebuild_pipeline_menu()
@@ -374,7 +373,7 @@ class DailyStreamApp(rumps.App):
 
         # If clipboard has image, save it
         actual_content = content
-        if content == "__clipboard_image__":
+        if content == CLIPBOARD_IMAGE_MARKER:
             save_dir = self.pm.get_screenshots_dir(pipeline)
             img_path = save_clipboard_image(save_dir)
             if img_path:
@@ -433,7 +432,8 @@ class DailyStreamApp(rumps.App):
                 if entries:
                     self.pm.mark_entry_synced(pipeline_name, len(entries) - 1)
         except Exception:
-            pass  # fire-and-forget
+            import traceback
+            traceback.print_exc()  # fire-and-forget, but log errors
 
     # --- Hotkeys ---
 

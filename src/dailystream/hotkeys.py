@@ -8,7 +8,7 @@ on a non-main thread.
 from __future__ import annotations
 
 import threading
-from typing import Callable, Optional, Dict, Tuple
+from typing import Any, Callable, Optional, Dict, Tuple
 
 import Quartz
 
@@ -64,11 +64,12 @@ def _parse_hotkey(hotkey_str: str) -> Tuple[int, int]:
         elif part in _KEY_CODES:
             keycode = _KEY_CODES[part]
         else:
-            # Unknown part — try as single character
-            if len(part) == 1 and part in _KEY_CODES:
-                keycode = _KEY_CODES[part]
-            else:
-                return (-1, 0)
+            # Unknown part
+            return (-1, 0)
+
+    if keycode == -1:
+        # No valid key found
+        return (-1, 0)
 
     return (keycode, modifiers)
 
@@ -89,7 +90,7 @@ class HotkeyManager:
         self._ss_keycode, self._ss_modifiers = _parse_hotkey(hotkey_screenshot)
         self._cb_keycode, self._cb_modifiers = _parse_hotkey(hotkey_clipboard)
 
-        self._tap: Optional[Quartz.CGEventTapProxy] = None  # type: ignore[assignment]
+        self._tap: Optional[Any] = None  # type: ignore[assignment]
         self._run_loop_source = None
         self._thread: Optional[threading.Thread] = None
         self._running = False

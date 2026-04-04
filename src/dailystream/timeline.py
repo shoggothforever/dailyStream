@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Optional
 
-from .config import Config, read_json
+from .config import Config, read_json, SHORT_TIME_PATTERN
 from .pipeline import PipelineManager
 from .templates import build_context, render_entry, get_timeline_templates
 
@@ -70,7 +70,7 @@ def generate_timeline(
         lines.append(f"### {pname} ({len(entries)} entries)\n")
         for entry in entries:
             ts = entry.get("timestamp", "?")
-            time_short = ts.split("T")[1][:8] if "T" in ts else ts
+            time_short = SHORT_TIME_PATTERN(ts)
             desc = entry.get("description", "")
             lines.append(f"- **{time_short}**: {desc or entry.get('input_type', '?')}")
         lines.append("")

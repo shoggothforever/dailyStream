@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional, Tuple
 
-from .config import now_filename
+from .config import now_filename, CLIPBOARD_IMAGE_MARKER
 
 
 def take_screenshot(save_dir: Path, mode: str = "interactive") -> Optional[Path]:
@@ -82,7 +82,7 @@ def grab_clipboard() -> Tuple[Optional[str], str]:
         )
         if check.returncode == 0:
             # There's an image in clipboard — we'll handle it in the feed flow
-            return "__clipboard_image__", "image"
+            return CLIPBOARD_IMAGE_MARKER, "image"
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
 

@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote as url_quote
 
+from .config import short_time
+
 
 # ------------------------------------------------------------------
 # Default templates
@@ -97,7 +99,7 @@ def build_context(
     content_max_len
         Max characters for text quoting.
     """
-    time_short = timestamp.split("T")[1][:8] if "T" in timestamp else timestamp
+    time_short = short_time(timestamp)
 
     ctx = EntryContext(
         time=time_short,

@@ -43,7 +43,8 @@ def end():
         click.echo("⚠️  No active workspace.")
         return
 
-    report = wm.end()
+    config = Config.load()
+    report = wm.end(config=config)
     click.echo("✅ Workspace ended.")
     if report:
         click.echo(f"📄 Timeline report: {report}")
@@ -137,7 +138,8 @@ def feed(content: str, desc: str, input_type: str):
         syncer = NoteSyncManager(config, workspace_dir=wm.workspace_dir)
         syncer.sync_entry(wm.meta, pipeline_name, entry)
     except Exception:
-        pass
+        import traceback
+        traceback.print_exc()
 
 
 @cli.command()

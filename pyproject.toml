@@ -13,8 +13,18 @@ dependencies = [
     "pyobjc-framework-Quartz>=10.0",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+
 [project.scripts]
 dailystream = "dailystream.cli:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dailystream"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

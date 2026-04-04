@@ -1,5 +1,6 @@
 """Workspace management for DailyStream."""
 
+import re
 import subprocess
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -57,7 +58,7 @@ class WorkspaceManager:
         assert self._workspace_dir is not None
         return self._workspace_dir / "workspace_meta.json"
 
-    def _save_meta(self) -> None:
+    def save_meta(self) -> None:
         if self._meta:
             write_json(self._meta_path(), asdict(self._meta))
 
@@ -128,7 +129,7 @@ class WorkspaceManager:
             created_at=now_iso(),
             title=title or workspace_id,
         )
-        self._save_meta()
+        self.save_meta()
         set_active_workspace_path(workspace_dir)
         return workspace_dir
 
@@ -137,7 +138,7 @@ class WorkspaceManager:
         if not self.is_active:
             return None
         self._meta.ended_at = now_iso()
-        self._save_meta()
+        self.save_meta()
         set_active_workspace_path(None)
 
         # Generate timeline report
@@ -150,13 +151,13 @@ class WorkspaceManager:
         """Register a pipeline in workspace metadata."""
         if self._meta and name not in self._meta.pipelines:
             self._meta.pipelines.append(name)
-            self._save_meta()
+            self.save_meta()
 
     def activate_pipeline(self, name: str) -> bool:
         """Activate a pipeline. Returns True if successful."""
         if self._meta and name in self._meta.pipelines:
             self._meta.active_pipeline = name
-            self._save_meta()
+            self.save_meta()
             return True
         return False
 

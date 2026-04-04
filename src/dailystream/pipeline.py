@@ -109,11 +109,16 @@ class PipelineManager:
         return d
 
     def get_all_entries(self) -> list[dict]:
-        """Get all entries across all pipelines, with pipeline name attached."""
+        """Get all entries across all pipelines, with pipeline name attached.
+        
+        Returns a new list where each entry dict has a 'pipeline' key added,
+        without modifying the original stored entries.
+        """
         all_entries = []
         for name in self.list_pipelines():
             for entry in self.get_entries(name):
-                entry["pipeline"] = name
-                all_entries.append(entry)
+                # Create new dict with pipeline info, don't modify original
+                entry_with_pipeline = {**entry, "pipeline": name}
+                all_entries.append(entry_with_pipeline)
         all_entries.sort(key=lambda e: e.get("timestamp", ""))
         return all_entries

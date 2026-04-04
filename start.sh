@@ -1,6 +1,5 @@
-cd /Users/yiths/CodeBuddy/dailyStream && source .venv/bin/activate && PYTHONPATH=src python -c "
+source .venv/bin/activate && PYTHONPATH=src python -c "
 import os, logging
-
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(name)s %(levelname)s: %(message)s',

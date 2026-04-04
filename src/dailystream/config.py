@@ -11,6 +11,7 @@ from typing import Optional
 CONFIG_DIR = Path.home() / ".dailystream"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_WORKSPACE_ROOT = CONFIG_DIR / "workspaces"
+CLIPBOARD_IMAGE_MARKER = "__clipboard_image__"
 
 
 @dataclass
@@ -58,9 +59,20 @@ class Config:
 # --- JSON helpers ---
 
 def read_json(path: Path) -> dict:
-    """Read a JSON file, return empty dict if not exists."""
+    """Read a JSON file, return empty dict if not exists.
+    
+    Raises:
+        JSONDecodeError: if file exists but is not valid JSON
+    """
     if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise json.JSONDecodeError(
+                f"Invalid JSON in {path}: {e.msg}",
+                e.doc,
+                e.pos,
+            ) from e
     return {}
 
 
@@ -74,6 +86,15 @@ def write_json(path: Path, data: dict) -> None:
 
 
 # --- Time helpers ---
+
+def short_time(timestamp: str) -> str:
+    """Extract short time string (HH:MM:SS) from ISO 8601 timestamp."""
+    return timestamp.split("T")[1][:8] if "T" in timestamp else timestamp
+
+
+# Alias for readability in timeline
+SHORT_TIME_PATTERN = short_time
+
 
 def now_iso() -> str:
     """Return current time as ISO 8601 string."""

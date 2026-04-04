@@ -34,8 +34,7 @@ pip install -e .
    - Warp / Alacritty / other: find in `/Applications/`
 3. Toggle it **ON**
 
-This is needed for `pynput` to listen to global hotkeys across all apps.
-The permission goes to your **terminal**, not Python itself.
+This is needed for global hotkey listening to work across all apps.
 
 ## Usage
 
