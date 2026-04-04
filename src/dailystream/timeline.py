@@ -3,10 +3,16 @@
 from pathlib import Path
 from typing import Optional
 
+from .config import Config, read_json
 from .pipeline import PipelineManager
+from .templates import build_context, render_entry, get_timeline_templates
 
 
-def generate_timeline(workspace_dir: Path, workspace_meta) -> Optional[Path]:
+def generate_timeline(
+    workspace_dir: Path,
+    workspace_meta,
+    config: Optional[Config] = None,
+) -> Optional[Path]:
     """Generate a Markdown timeline report for the workspace.
 
     Returns path to the generated report file.
@@ -16,6 +22,10 @@ def generate_timeline(workspace_dir: Path, workspace_meta) -> Optional[Path]:
 
     if not all_entries:
         return None
+
+    templates = get_timeline_templates(
+        config.timeline_templates if config else None
+    )
 
     lines = []
     title = workspace_meta.title or workspace_meta.workspace_id
@@ -40,19 +50,17 @@ def generate_timeline(workspace_dir: Path, workspace_meta) -> Optional[Path]:
         desc = entry.get("description", "")
         content = entry.get("input_content", "")
 
-        # Format timestamp (show just time portion)
-        time_short = ts.split("T")[1][:8] if "T" in ts else ts
-
-        lines.append(f"### {time_short} — [{pipe}] ({itype})\n")
-        if desc:
-            lines.append(f"{desc}\n")
-        if itype == "image":
-            # Relative path for image
-            lines.append(f"![screenshot]({content})\n")
-        elif itype == "url":
-            lines.append(f"[{content}]({content})\n")
-        elif content and content != desc:
-            lines.append(f"> {content[:200]}\n")
+        ctx = build_context(
+            timestamp=ts,
+            input_type=itype,
+            description=desc,
+            content=content,
+            pipeline=pipe,
+            image_path=content if itype == "image" else None,
+            content_max_len=200,
+        )
+        entry_block = render_entry(templates, ctx)
+        lines.append(entry_block)
         lines.append("")
 
     # Per-pipeline summary

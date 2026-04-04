@@ -8,12 +8,19 @@ Obsidian sync is still supported as an optional secondary backend.
 """
 
 import logging
+import re
 import shutil
 from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
 from .config import Config
+from .templates import (
+    build_context,
+    render_entry,
+    get_entry_templates,
+    get_obsidian_templates,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +37,12 @@ class LocalMarkdownSyncer:
             context.json
     """
 
-    def __init__(self, workspace_dir: Path) -> None:
+    def __init__(self, workspace_dir: Path, config: Optional[Config] = None) -> None:
         self._ws_dir = workspace_dir
         self._md_path = workspace_dir / "stream.md"
+        self._templates = get_entry_templates(
+            config.entry_templates if config else None
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -55,41 +65,25 @@ class LocalMarkdownSyncer:
         section**.  This way switching between pipelines keeps each
         pipeline's entries grouped together.
         """
-        import re
-        from urllib.parse import quote
-
-        time_short = timestamp.split("T")[1][:8] if "T" in timestamp else timestamp
-
-        existing = ""
-        if self._md_path.exists():
-            existing = self._md_path.read_text(encoding="utf-8")
-
-        # ----------------------------------------------------------
-        # Build the entry block
-        # ----------------------------------------------------------
-        entry_lines: list[str] = []
-        entry_lines.append(f"**{time_short}** · {input_type}")
-        if description:
-            entry_lines.append(f"\n{description}")
-
-        if input_type == "image" and image_path:
-            try:
-                rel = Path(image_path).resolve().relative_to(self._ws_dir.resolve())
-            except ValueError:
-                rel = Path(image_path)
-            rel_encoded = quote(str(rel.as_posix()), safe="/")
-            entry_lines.append(f"\n![screenshot]({rel_encoded})")
-        elif input_type == "url":
-            entry_lines.append(f"\n[{content}]({content})")
-        elif input_type == "text" and content != description:
-            entry_lines.append(f"\n> {content[:500]}")
-
-        entry_lines.append("\n---")
-        entry_block = "\n".join(entry_lines)
+        # Build template context and render
+        ctx = build_context(
+            timestamp=timestamp,
+            input_type=input_type,
+            description=description,
+            content=content,
+            pipeline=pipeline_name,
+            image_path=image_path,
+            workspace_dir=self._ws_dir,
+        )
+        entry_block = render_entry(self._templates, ctx)
 
         # ----------------------------------------------------------
         # Insert into the correct position
         # ----------------------------------------------------------
+        existing = ""
+        if self._md_path.exists():
+            existing = self._md_path.read_text(encoding="utf-8")
+
         heading = f"## {pipeline_name}"
 
         if not existing:
@@ -133,8 +127,11 @@ class ObsidianSyncer:
     Pipelines are separated by headings.
     """
 
-    def __init__(self, vault_path: str) -> None:
+    def __init__(self, vault_path: str, config: Optional[Config] = None) -> None:
         self.vault_path = Path(vault_path)
+        self._templates = get_obsidian_templates(
+            config.obsidian_templates if config else None
+        )
 
     def sync_entry(
         self,
@@ -164,10 +161,19 @@ class ObsidianSyncer:
                 shutil.copy2(src, dst)
             rel_img = f"screenshots/{src.name}"
 
-        # Format time
-        time_short = timestamp.split("T")[1][:8] if "T" in timestamp else timestamp
+        # Build template context and render
+        ctx = build_context(
+            timestamp=timestamp,
+            input_type=input_type,
+            description=description,
+            content=content,
+            pipeline=pipeline_name,
+            image_path=image_path,
+            obsidian_rel_img=rel_img,
+        )
+        entry_block = render_entry(self._templates, ctx)
 
-        # Build markdown entry
+        # Build file content
         lines: list[str] = []
 
         # Check if file exists and if pipeline heading already present
@@ -183,16 +189,7 @@ class ObsidianSyncer:
         if heading not in existing:
             lines.append(f"\n{heading}\n")
 
-        lines.append(f"\n### {time_short} — {input_type}\n")
-        if description:
-            lines.append(f"{description}\n")
-        if rel_img:
-            lines.append(f"![[{rel_img}]]\n")
-        elif input_type == "url":
-            lines.append(f"[{content}]({content})\n")
-        elif input_type == "text" and content != description:
-            lines.append(f"> {content[:500]}\n")
-        lines.append("")
+        lines.append(f"\n{entry_block}\n")
 
         # Append to file
         with open(md_file, "a", encoding="utf-8") as f:
@@ -208,11 +205,11 @@ class NoteSyncManager:
         self._obsidian: Optional[ObsidianSyncer] = None
 
         if workspace_dir is not None:
-            self._local = LocalMarkdownSyncer(workspace_dir)
+            self._local = LocalMarkdownSyncer(workspace_dir, config)
 
         if config.note_sync_backend in ("obsidian", "both"):
             if config.obsidian_vault_path:
-                self._obsidian = ObsidianSyncer(config.obsidian_vault_path)
+                self._obsidian = ObsidianSyncer(config.obsidian_vault_path, config)
 
     def sync_entry(self, workspace_meta, pipeline_name: str, entry) -> None:
         """Sync a single entry to configured backends. Fire-and-forget."""

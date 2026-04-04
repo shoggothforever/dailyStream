@@ -132,7 +132,7 @@ class WorkspaceManager:
         set_active_workspace_path(workspace_dir)
         return workspace_dir
 
-    def end(self) -> Optional[str]:
+    def end(self, config: Optional["Config"] = None) -> Optional[str]:
         """End the current workspace. Returns path to timeline report or None."""
         if not self.is_active:
             return None
@@ -142,7 +142,7 @@ class WorkspaceManager:
 
         # Generate timeline report
         from .timeline import generate_timeline
-        report_path = generate_timeline(self._workspace_dir, self._meta)
+        report_path = generate_timeline(self._workspace_dir, self._meta, config=config)
 
         return str(report_path) if report_path else None
 

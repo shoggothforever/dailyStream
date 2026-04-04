@@ -4,5 +4,15 @@
   "screenshot_mode": "interactive",
   "default_workspace_path": "",
   "note_sync_backend": "markdown",
-  "obsidian_vault_path": ""
+  "obsidian_vault_path": "",
+
+  "_comment_templates": "以下模板字段均为可选。不设置则使用内置默认模板。可用占位符: {time} {type} {description} {content} {image} {link} {quote} {pipeline}",
+
+  "entry_templates": {
+    "image": "**{time}** · {type}\n\n{description}\n\n{image}\n\n---",
+    "url":   "**{time}** · {type}\n\n{description}\n\n{link}\n\n---",
+    "text":  "**{time}** · {type}\n\n{description}\n\n{quote}\n\n---"
+  },
+  "obsidian_templates": null,
+  "timeline_templates": null
 }

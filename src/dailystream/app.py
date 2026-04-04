@@ -158,7 +158,7 @@ class DailyStreamApp(rumps.App):
         if not self.wm.is_active:
             rumps.alert("No Workspace", "No active workspace to end.")
             return
-        report = self.wm.end()
+        report = self.wm.end(config=self.config)
         self.pm = None
         self._rebuild_pipeline_menu()
         self._update_title()

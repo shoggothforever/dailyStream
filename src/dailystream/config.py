@@ -24,6 +24,15 @@ class Config:
     note_sync_backend: str = "markdown"  # "markdown" | "obsidian" | "both" | "none"
     obsidian_vault_path: str = ""
 
+    # Customisable Markdown templates per input_type.
+    # Keys: "image", "url", "text" (or any custom type).
+    # Available placeholders: {time}, {type}, {description}, {content},
+    #   {image}, {link}, {quote}, {pipeline}
+    # Set to None / omit to use built-in defaults.
+    entry_templates: Optional[dict[str, str]] = None
+    obsidian_templates: Optional[dict[str, str]] = None
+    timeline_templates: Optional[dict[str, str]] = None
+
     @classmethod
     def load(cls) -> "Config":
         """Load config from file, create default if not exists."""
