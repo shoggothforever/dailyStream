@@ -13,6 +13,37 @@ from .capture import take_screenshot, grab_clipboard, save_clipboard_image
 from .hotkeys import HotkeyManager
 
 
+# --- Focus helper (ObjC class registered once at module level) ---
+
+_FocusTarget = None  # lazily created on first use
+
+
+def _get_focus_target_class():
+    """Return the _FocusTarget ObjC class, creating it once."""
+    global _FocusTarget
+    if _FocusTarget is not None:
+        return _FocusTarget
+    import AppKit
+
+    class _FocusTargetImpl(AppKit.NSObject):
+        """NSTimer target that calls makeFirstResponder_ on the stored window/field."""
+
+        _alert_window = None
+        _textfield = None
+
+        def setFocus_(self, timer):
+            try:
+                w = self._alert_window
+                tf = self._textfield
+                if w is not None and tf is not None:
+                    w.makeFirstResponder_(tf)
+            except Exception:
+                pass
+
+    _FocusTarget = _FocusTargetImpl
+    return _FocusTarget
+
+
 def _run_window(win: rumps.Window):
     """Run a rumps.Window with proper app activation and input focus.
 
@@ -35,17 +66,10 @@ def _run_window(win: rumps.Window):
         ns_app = AppKit.NSApplication.sharedApplication()
         ns_app.activateIgnoringOtherApps_(True)
 
-        alert_window = win._alert.window()
-        textfield = win._textfield
-
-        class _FocusTarget(AppKit.NSObject):
-            def setFocus_(self, timer):
-                try:
-                    alert_window.makeFirstResponder_(textfield)
-                except Exception:
-                    pass
-
-        target = _FocusTarget.alloc().init()
+        cls = _get_focus_target_class()
+        target = cls.alloc().init()
+        target._alert_window = win._alert.window()
+        target._textfield = win._textfield
         win._focus_target = target  # prevent GC
 
         timer = AppKit.NSTimer.timerWithTimeInterval_target_selector_userInfo_repeats_(
