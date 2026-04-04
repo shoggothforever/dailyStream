@@ -92,17 +92,33 @@ class WorkspaceManager:
         return s[:64] if s else ""
 
     def create(self, base_path: Optional[Path] = None, title: Optional[str] = None) -> Path:
-        """Create a new workspace. Returns workspace directory path."""
+        """Create a new workspace. Returns workspace directory path.
+
+        Directory layout::
+
+            <base_path>/
+              260404/                ← date folder (yymmdd)
+                my_workspace/       ← workspace name
+                  workspace_meta.json
+                  stream.md
+                  screenshots/
+                  pipelines/
+        """
         if base_path is None:
             base_path = DEFAULT_WORKSPACE_ROOT
 
         base_path = Path(base_path)
-        workspace_id = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        now = datetime.now()
+        workspace_id = now.strftime("%Y-%m-%d_%H%M%S")
 
-        # Folder name includes the workspace title for readability
-        safe_title = self._safe_dirname(title) if title else ""
-        folder_name = f"{workspace_id}_{safe_title}" if safe_title else workspace_id
-        workspace_dir = base_path / folder_name
+        # Two-level layout: yymmdd / workspace_name
+        date_folder = now.strftime("%y%m%d")
+        safe_title = self._safe_dirname(title) if title else workspace_id
+        workspace_dir = base_path / date_folder / safe_title
+        # If same name already exists today, append a short timestamp suffix
+        if workspace_dir.exists():
+            suffix = now.strftime("%H%M%S")
+            workspace_dir = base_path / date_folder / f"{safe_title}_{suffix}"
         workspace_dir.mkdir(parents=True, exist_ok=True)
 
         self._workspace_dir = workspace_dir
