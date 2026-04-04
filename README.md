@@ -74,15 +74,31 @@ dailystream end
 
 Config file: `~/.dailystream/config.json`
 
+Use `config.example.json` as a template. Supported options:
+
 ```json
 {
-  "hotkey_screenshot": "<ctrl>+<shift>+s",
-  "hotkey_clipboard": "<ctrl>+<shift>+v",
+  "hotkey_screenshot": "<cmd>+1",
+  "hotkey_clipboard": "<cmd>+2",
+  "screenshot_mode": "interactive",
   "default_workspace_path": "",
-  "note_sync_backend": "apple_notes",
+  "note_sync_backend": "markdown",
   "obsidian_vault_path": ""
 }
 ```
+
+### Configuration Options
+
+| Option | Default | Values | Description |
+|--------|---------|--------|-------------|
+| `hotkey_screenshot` | `<cmd>+1` | Hotkey string | Global hotkey to capture screenshot |
+| `hotkey_clipboard` | `<cmd>+2` | Hotkey string | Global hotkey to capture clipboard content |
+| `screenshot_mode` | `interactive` | `interactive`, `fullscreen` | `interactive`: let user select region; `fullscreen`: capture entire screen |
+| `default_workspace_path` | `` | Path string | Default directory for workspaces (optional) |
+| `note_sync_backend` | `markdown` | `markdown`, `obsidian`, `both`, `none` | Where to sync captured content |
+| `obsidian_vault_path` | `` | Path string | Obsidian vault path (required if using obsidian backend) |
+
+**Hotkey Format**: Use `<modifier>+<key>` format, e.g. `<cmd>+1`, `<shift>+<alt>+s`
 
 ## License
 

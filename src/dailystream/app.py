@@ -241,7 +241,7 @@ class DailyStreamApp(rumps.App):
 
         def _capture():
             try:
-                path = take_screenshot(save_dir)
+                path = take_screenshot(save_dir, mode=self.config.screenshot_mode)
                 if path is None:
                     return  # user cancelled
 

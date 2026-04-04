@@ -8,9 +8,13 @@ from typing import Optional, Tuple
 from .config import now_filename
 
 
-def take_screenshot(save_dir: Path) -> Optional[Path]:
-    """Call macOS screencapture -i for interactive region capture.
+def take_screenshot(save_dir: Path, mode: str = "interactive") -> Optional[Path]:
+    """Call macOS screencapture to capture screenshot.
 
+    Args:
+        save_dir: Directory to save screenshot
+        mode: "interactive" for user selection, "fullscreen" for entire screen
+    
     Saves to save_dir with a timestamped filename.
     Returns the screenshot path, or None if user cancelled.
     """
@@ -19,10 +23,18 @@ def take_screenshot(save_dir: Path) -> Optional[Path]:
     save_path = save_dir / filename
 
     try:
-        result = subprocess.run(
-            ["screencapture", "-i", str(save_path)],
-            timeout=120,  # generous timeout for user interaction
-        )
+        if mode == "fullscreen":
+            # Capture entire screen without user interaction
+            result = subprocess.run(
+                ["screencapture", str(save_path)],
+                timeout=10,
+            )
+        else:
+            # Interactive mode: user selects region
+            result = subprocess.run(
+                ["screencapture", "-i", str(save_path)],
+                timeout=120,  # generous timeout for user interaction
+            )
     except subprocess.TimeoutExpired:
         return None
 

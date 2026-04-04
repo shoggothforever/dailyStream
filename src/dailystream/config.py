@@ -19,6 +19,7 @@ class Config:
 
     hotkey_screenshot: str = "<ctrl>+<shift>+s"
     hotkey_clipboard: str = "<ctrl>+<shift>+v"
+    screenshot_mode: str = "interactive"  # "interactive" | "fullscreen"
     default_workspace_path: str = ""
     note_sync_backend: str = "markdown"  # "markdown" | "obsidian" | "both" | "none"
     obsidian_vault_path: str = ""

@@ -1,6 +1,7 @@
 {
   "hotkey_screenshot": "<cmd>+1",
   "hotkey_clipboard": "<cmd>+2",
+  "screenshot_mode": "interactive",
   "default_workspace_path": "",
   "note_sync_backend": "markdown",
   "obsidian_vault_path": ""
