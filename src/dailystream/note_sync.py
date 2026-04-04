@@ -48,50 +48,82 @@ class LocalMarkdownSyncer:
         content: str,
         image_path: Optional[str] = None,
     ) -> None:
-        """Append an entry to ``stream.md``."""
+        """Insert an entry into ``stream.md`` under its pipeline section.
+
+        Instead of blindly appending to the end of the file, the new entry
+        is inserted at the **end of the matching ``## pipeline_name``
+        section**.  This way switching between pipelines keeps each
+        pipeline's entries grouped together.
+        """
+        import re
+        from urllib.parse import quote
+
         time_short = timestamp.split("T")[1][:8] if "T" in timestamp else timestamp
 
         existing = ""
         if self._md_path.exists():
             existing = self._md_path.read_text(encoding="utf-8")
 
-        lines: list[str] = []
-
-        # First entry → write title header
-        if not existing:
-            lines.append(f"# {workspace_title}\n")
-
-        # Pipeline heading (only once per pipeline)
-        heading = f"## {pipeline_name}"
-        if heading not in existing:
-            lines.append(f"\n{heading}\n")
-
-        # Entry — keep it minimal, entries are separated by ---
-        lines.append(f"\n**{time_short}** · {input_type}\n")
+        # ----------------------------------------------------------
+        # Build the entry block
+        # ----------------------------------------------------------
+        entry_lines: list[str] = []
+        entry_lines.append(f"**{time_short}** · {input_type}")
         if description:
-            lines.append(f"\n{description}\n")
+            entry_lines.append(f"\n{description}")
 
         if input_type == "image" and image_path:
-            # Use relative path from workspace root so Markdown renderers
-            # (Obsidian, Typora, VS Code, GitHub, …) can display it.
             try:
                 rel = Path(image_path).resolve().relative_to(self._ws_dir.resolve())
             except ValueError:
                 rel = Path(image_path)
-            # URL-encode spaces (and other special chars) so Markdown
-            # renderers can resolve the link correctly.
-            from urllib.parse import quote
             rel_encoded = quote(str(rel.as_posix()), safe="/")
-            lines.append(f"\n![screenshot]({rel_encoded})\n")
+            entry_lines.append(f"\n![screenshot]({rel_encoded})")
         elif input_type == "url":
-            lines.append(f"\n[{content}]({content})\n")
+            entry_lines.append(f"\n[{content}]({content})")
         elif input_type == "text" and content != description:
-            lines.append(f"\n> {content[:500]}\n")
+            entry_lines.append(f"\n> {content[:500]}")
 
-        lines.append("\n---\n")
+        entry_lines.append("\n---")
+        entry_block = "\n".join(entry_lines)
 
-        with open(self._md_path, "a", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+        # ----------------------------------------------------------
+        # Insert into the correct position
+        # ----------------------------------------------------------
+        heading = f"## {pipeline_name}"
+
+        if not existing:
+            # Brand-new file
+            full = f"# {workspace_title}\n\n{heading}\n\n{entry_block}\n"
+            self._md_path.write_text(full, encoding="utf-8")
+            return
+
+        if heading in existing:
+            # Find the end of this pipeline's section.
+            # A section ends right before the next ``## `` heading or at EOF.
+            heading_pos = existing.index(heading)
+            after_heading = heading_pos + len(heading)
+            # Look for the next ## heading after this one
+            next_heading = re.search(r'^## ', existing[after_heading:], re.MULTILINE)
+            if next_heading:
+                insert_pos = after_heading + next_heading.start()
+                # Insert just before the next heading (keep a blank line)
+                updated = (
+                    existing[:insert_pos].rstrip("\n")
+                    + "\n\n"
+                    + entry_block
+                    + "\n\n"
+                    + existing[insert_pos:]
+                )
+            else:
+                # This is the last section — append at end
+                updated = existing.rstrip("\n") + "\n\n" + entry_block + "\n"
+            self._md_path.write_text(updated, encoding="utf-8")
+        else:
+            # New pipeline — append the heading + entry at the end
+            addition = f"\n{heading}\n\n{entry_block}\n"
+            updated = existing.rstrip("\n") + "\n" + addition
+            self._md_path.write_text(updated, encoding="utf-8")
 
 
 class ObsidianSyncer:
