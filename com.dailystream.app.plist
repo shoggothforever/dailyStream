@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.dailystream.app</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/yiths/CodeBuddy/dailyStream/.venv/bin/python</string>
+        <string>-m</string>
+        <string>dailystream.cli</string>
+        <string>app</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>/Users/yiths/CodeBuddy/dailyStream/src</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/yiths/CodeBuddy/dailyStream</string>
+
+    <!-- Run on login -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart if crashed -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Log output -->
+    <key>StandardOutPath</key>
+    <string>/tmp/dailystream.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/dailystream.err</string>
+</dict>
+</plist>

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dailystream"
+version = "0.1.0"
+description = "A minimal daily recording stream system for macOS"
+requires-python = ">=3.11"
+dependencies = [
+    "rumps>=0.4.0",
+    "click>=8.1",
+    "pynput>=1.7",
+]
+
+[project.scripts]
+dailystream = "dailystream.cli:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dailystream"]

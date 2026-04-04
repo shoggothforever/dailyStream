@@ -2,33 +2,26 @@
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
 *.egg-info/
-*.egg
 dist/
 build/
-.eggs/
+*.egg
 
 # Virtual environments
 .venv/
 venv/
-env/
 
 # IDE
-.idea/
 .vscode/
-*.swp
-*.swo
+.idea/
 
-# Environment
-.env
-
-# macOS
+# OS
 .DS_Store
+Thumbs.db
 
-# Data directory (user workspace data)
-data/
-!data/.gitkeep
+# Runtime
+nohup.out
+*.log
 
-# Config
-.dailystream/
+# CodeBuddy internal data
+.codebuddy/
