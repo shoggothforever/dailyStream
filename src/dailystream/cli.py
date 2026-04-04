@@ -68,11 +68,10 @@ def pipeline_create(name: str):
     pm.create(name)
     wm.add_pipeline(name)
 
-    # Auto-activate if first
-    if wm.get_active_pipeline() is None:
-        wm.activate_pipeline(name)
+    # Always activate the newly created pipeline
+    wm.activate_pipeline(name)
 
-    click.echo(f"✅ Pipeline '{name}' created.")
+    click.echo(f"✅ Pipeline '{name}' created and activated.")
 
 
 @pipeline.command("list")

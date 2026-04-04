@@ -144,36 +144,7 @@ class WorkspaceManager:
         from .timeline import generate_timeline
         report_path = generate_timeline(self._workspace_dir, self._meta)
 
-        # Sync all entries to notes on end
-        self._sync_all_on_end()
-
         return str(report_path) if report_path else None
-
-    def _sync_all_on_end(self) -> None:
-        """Sync only un-synced pipeline entries to local Markdown when ending workspace."""
-        try:
-            from .config import Config
-            from .note_sync import NoteSyncManager
-            from .pipeline import PipelineManager
-
-            config = Config.load()
-            syncer = NoteSyncManager(config, workspace_dir=self._workspace_dir)
-            pm = PipelineManager(self._workspace_dir)
-
-            for pipeline_name in pm.list_pipelines():
-                for i, entry in enumerate(pm.get_entries(pipeline_name)):
-                    # Skip entries already synced in real-time
-                    if entry.get("synced", False):
-                        continue
-                    syncer.sync_entry(
-                        workspace_meta=self._meta,
-                        pipeline_name=pipeline_name,
-                        entry=entry,
-                    )
-                    pm.mark_entry_synced(pipeline_name, i)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(f"End sync failed: {e}")
 
     def add_pipeline(self, name: str) -> None:
         """Register a pipeline in workspace metadata."""

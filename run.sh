@@ -33,16 +33,34 @@ export PYTHONPATH="$SCRIPT_DIR/src${SITE_PACKAGES:+:$SITE_PACKAGES}"
 
 case "$1" in
   app)
-    # Write launch script and open in Terminal.app for proper GUI session
-    cat > /tmp/_ds_launch.sh << LAUNCH_EOF
-#!/bin/bash
-export PYTHONPATH="$SCRIPT_DIR/src:$SITE_PACKAGES"
-exec "$PYTHON_FRAMEWORK" -m dailystream.cli app
-LAUNCH_EOF
-    chmod +x /tmp/_ds_launch.sh
-    osascript -e 'tell application "Terminal" to do script "/tmp/_ds_launch.sh"'
-    osascript -e 'tell application "Terminal" to activate'
-    echo "✓ DailyStream launching in Terminal.app — check menu bar top-right"
+    # Launch DailyStream menu bar app directly in current shell
+    cd "$SCRIPT_DIR" && source .venv/bin/activate && PYTHONPATH=src python -c "
+import os, sys, logging
+
+import subprocess
+
+import AppKit
+ns_app = AppKit.NSApplication.sharedApplication()
+ns_app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+
+# Set up logging so real errors go to file, not lost in noise
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(name)s %(levelname)s: %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.expanduser('~/.dailystream/app.log')),
+    ]
+)
+
+from dailystream.app import DailyStreamApp
+import traceback
+try:
+    app = DailyStreamApp()
+    print('App created OK, calling run()...')
+    app.run()
+except Exception as e:
+    traceback.print_exc()
+" 2>&1 | grep -v 'TSM AdjustCapsLock\|IMKCFRunLoopWakeUp'
     ;;
   install-service)
     cp "$PLIST_SRC" "$PLIST_DEST"

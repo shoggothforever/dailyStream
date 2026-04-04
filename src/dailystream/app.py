@@ -40,6 +40,7 @@ class DailyStreamApp(rumps.App):
             rumps.MenuItem("Open Workspace", callback=self._on_open_workspace),
             rumps.MenuItem("End Workspace", callback=self._on_end_workspace),
             rumps.MenuItem("📂 Open Folder", callback=self._on_open_folder),
+            rumps.MenuItem("📝 Open Markdown", callback=self._on_open_markdown),
             None,  # separator
             rumps.MenuItem("Create Pipeline", callback=self._on_create_pipeline),
             None,  # separator
@@ -172,6 +173,20 @@ class DailyStreamApp(rumps.App):
         import subprocess
         subprocess.Popen(["open", str(self.wm.workspace_dir)])
 
+    def _on_open_markdown(self, _) -> None:
+        """Open stream.md in VS Code."""
+        if not self.wm.is_active or not self.wm.workspace_dir:
+            rumps.alert("No Workspace", "No active workspace. Start or open one first.")
+            return
+        md_path = self.wm.workspace_dir / "stream.md"
+        if not md_path.exists():
+            rumps.alert("No Markdown", "stream.md has not been created yet.\nCapture something first.")
+            return
+        import subprocess
+        # Use 'open -a' so we don't depend on 'code' being in PATH
+        # (menu-bar apps don't inherit terminal PATH)
+        subprocess.Popen(["open", "-a", "Visual Studio Code", str(md_path)])
+
     # --- Pipeline actions ---
 
     def _on_create_pipeline(self, _) -> None:
@@ -194,9 +209,8 @@ class DailyStreamApp(rumps.App):
         self.pm.create(name)
         self.wm.add_pipeline(name)
 
-        # Auto-activate if first pipeline
-        if self.wm.get_active_pipeline() is None:
-            self.wm.activate_pipeline(name)
+        # Always activate the newly created pipeline
+        self.wm.activate_pipeline(name)
 
         self._rebuild_pipeline_menu()
         self._update_title()
@@ -281,22 +295,31 @@ class DailyStreamApp(rumps.App):
                 rumps.notification("DailyStream", "Error", "Failed to save clipboard image.")
                 return
 
-        preview = actual_content[:80] + "..." if len(actual_content) > 80 else actual_content
-        win = rumps.Window(
-            message=f"Clipboard ({content_type}): {preview}",
-            title=f"[Clipboard] → {pipeline}",
-            default_text="",
-            ok="Save",
-            cancel="Cancel",
-        )
-        resp = win.run()
-        if resp.clicked != 1:
-            return
+        def _show_dialog():
+            preview = actual_content[:80] + "..." if len(actual_content) > 80 else actual_content
+            win = rumps.Window(
+                message=f"Clipboard ({content_type}): {preview}",
+                title=f"[Clipboard] → {pipeline}",
+                default_text="",
+                ok="Save",
+                cancel="Cancel",
+            )
+            resp = win.run()
+            if resp.clicked != 1:
+                return
 
-        desc = resp.text.strip()
-        entry = self.pm.add_entry(pipeline, content_type, actual_content, desc)
-        self._sync_entry(pipeline, entry)
-        rumps.notification("DailyStream", f"Saved to {pipeline}", desc or preview)
+            desc = resp.text.strip()
+            entry = self.pm.add_entry(pipeline, content_type, actual_content, desc)
+            self._sync_entry(pipeline, entry)
+            rumps.notification("DailyStream", f"Saved to {pipeline}", desc or preview)
+
+        # Hotkey callbacks run on a background thread (pynput),
+        # but rumps UI (Window.run) must execute on the main thread.
+        try:
+            import AppKit
+            AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(_show_dialog)
+        except Exception:
+            _show_dialog()
 
     # --- Note sync ---
 
