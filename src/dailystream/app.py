@@ -13,79 +13,59 @@ from .capture import take_screenshot, grab_clipboard, save_clipboard_image
 from .hotkeys import HotkeyManager
 
 
-def _activate_and_focus() -> None:
-    """Activate the app and schedule focus on the alert's text field.
+def _run_window(win: rumps.Window):
+    """Run a rumps.Window with proper app activation and input focus.
 
-    This fixes the invisible cursor issue caused by
-    NSApplicationActivationPolicyAccessory — the app doesn't auto-become
-    the key application, so the NSTextField inside the NSAlert never gets
-    firstResponder status.
+    Call this instead of ``win.run()`` to ensure the text input cursor
+    is visible in the dialog.
 
-    We use an NSTimer on the main run-loop to set focus 50ms later,
-    which is after NSAlert.runModal() has presented the window.
+    The root cause of the invisible cursor:
+    - NSApplicationActivationPolicyAccessory means the app never auto-becomes
+      the key application when a dialog appears.
+    - NSAlert.runModal() doesn't make its accessory-view NSTextField the
+      firstResponder automatically.
+
+    Fix: we activate the app, then schedule a timer in NSModalPanelRunLoopMode
+    (the run-loop mode used by runModal) to set firstResponder on the text
+    field after the alert window is on screen.
     """
     try:
         import AppKit
 
-        # 1) Bring app to front
         ns_app = AppKit.NSApplication.sharedApplication()
         ns_app.activateIgnoringOtherApps_(True)
 
-        # 2) Schedule focus via NSTimer
+        alert_window = win._alert.window()
+        textfield = win._textfield
+
         class _FocusTarget(AppKit.NSObject):
-            def fire_(self, timer):
+            def setFocus_(self, timer):
                 try:
-                    key_win = AppKit.NSApplication.sharedApplication().keyWindow()
-                    if key_win is None:
-                        return
-                    _focus_first_editable(key_win.contentView(), key_win)
+                    alert_window.makeFirstResponder_(textfield)
                 except Exception:
                     pass
 
-        # Must keep a reference so the target isn't GC'd before the timer fires
         target = _FocusTarget.alloc().init()
-        _activate_and_focus._timer_target = target  # prevent GC
+        win._focus_target = target  # prevent GC
 
-        AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+        timer = AppKit.NSTimer.timerWithTimeInterval_target_selector_userInfo_repeats_(
             0.05,  # 50ms — enough for the alert to appear
             target,
-            b"fire:",
+            b"setFocus:",
             None,
             False,
         )
+        AppKit.NSRunLoop.currentRunLoop().addTimer_forMode_(
+            timer, AppKit.NSModalPanelRunLoopMode
+        )
     except Exception:
-        # Fallback: at least try activating without focus scheduling
+        # Fallback: at least try activating
         try:
             import AppKit
             AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         except Exception:
             pass
 
-
-def _focus_first_editable(view, window) -> bool:
-    """Recursively find the first editable NSTextField and make it firstResponder."""
-    if view is None:
-        return False
-    try:
-        import AppKit
-        if isinstance(view, AppKit.NSTextField) and view.isEditable():
-            window.makeFirstResponder_(view)
-            return True
-        for subview in view.subviews():
-            if _focus_first_editable(subview, window):
-                return True
-    except Exception:
-        pass
-    return False
-
-
-def _run_window(win: rumps.Window):
-    """Run a rumps.Window with proper app activation and input focus.
-
-    Call this instead of ``win.run()`` to ensure the text input cursor
-    is visible in the dialog.
-    """
-    _activate_and_focus()
     return win.run()
 
 
@@ -277,7 +257,7 @@ class DailyStreamApp(rumps.App):
             ok="Create",
             cancel="Cancel",
         )
-        resp = win.run()
+        resp = _run_window(win)
         if resp.clicked != 1 or not resp.text.strip():
             return
 
@@ -330,7 +310,7 @@ class DailyStreamApp(rumps.App):
                             ok="Save",
                             cancel="Cancel",
                         )
-                        resp = win.run()
+                        resp = _run_window(win)
                         if resp.clicked != 1:
                             # User cancelled — remove the screenshot file
                             try:
