@@ -243,23 +243,32 @@ class DailyStreamApp(rumps.App):
             try:
                 path = take_screenshot(save_dir, mode=self.config.screenshot_mode)
                 if path is None:
-                    return  # user cancelled
+                    return  # user cancelled screencapture
 
                 def _show_dialog():
-                    win = rumps.Window(
-                        message=f"Screenshot: {path.name}\nAdd a description:",
-                        title=f"[Screenshot] → {pipeline}",
-                        default_text="",
-                        ok="Save",
-                        cancel="Cancel",
-                    )
-                    resp = win.run()
-                    if resp.clicked != 1:
-                        return
-                    desc = resp.text.strip()
-                    entry = self.pm.add_entry(pipeline, "image", str(path), desc)
-                    self._sync_entry(pipeline, entry)
-                    rumps.notification("DailyStream", f"Saved to {pipeline}", desc or path.name)
+                    try:
+                        win = rumps.Window(
+                            message=f"Screenshot: {path.name}\nAdd a description:",
+                            title=f"[Screenshot] → {pipeline}",
+                            default_text="",
+                            ok="Save",
+                            cancel="Cancel",
+                        )
+                        resp = win.run()
+                        if resp.clicked != 1:
+                            # User cancelled — remove the screenshot file
+                            try:
+                                path.unlink(missing_ok=True)
+                            except Exception:
+                                pass
+                            return
+                        desc = resp.text.strip()
+                        entry = self.pm.add_entry(pipeline, "image", str(path), desc)
+                        self._sync_entry(pipeline, entry)
+                        rumps.notification("DailyStream", f"Saved to {pipeline}", desc or path.name)
+                    except Exception:
+                        import traceback
+                        traceback.print_exc()
 
                 try:
                     import AppKit
@@ -296,24 +305,28 @@ class DailyStreamApp(rumps.App):
                 return
 
         def _show_dialog():
-            preview = actual_content[:80] + "..." if len(actual_content) > 80 else actual_content
-            win = rumps.Window(
-                message=f"Clipboard ({content_type}): {preview}",
-                title=f"[Clipboard] → {pipeline}",
-                default_text="",
-                ok="Save",
-                cancel="Cancel",
-            )
-            resp = win.run()
-            if resp.clicked != 1:
-                return
+            try:
+                preview = actual_content[:80] + "..." if len(actual_content) > 80 else actual_content
+                win = rumps.Window(
+                    message=f"Clipboard ({content_type}): {preview}",
+                    title=f"[Clipboard] → {pipeline}",
+                    default_text="",
+                    ok="Save",
+                    cancel="Cancel",
+                )
+                resp = win.run()
+                if resp.clicked != 1:
+                    return
 
-            desc = resp.text.strip()
-            entry = self.pm.add_entry(pipeline, content_type, actual_content, desc)
-            self._sync_entry(pipeline, entry)
-            rumps.notification("DailyStream", f"Saved to {pipeline}", desc or preview)
+                desc = resp.text.strip()
+                entry = self.pm.add_entry(pipeline, content_type, actual_content, desc)
+                self._sync_entry(pipeline, entry)
+                rumps.notification("DailyStream", f"Saved to {pipeline}", desc or preview)
+            except Exception:
+                import traceback
+                traceback.print_exc()
 
-        # Hotkey callbacks run on a background thread (pynput),
+        # Hotkey callbacks run on a background thread,
         # but rumps UI (Window.run) must execute on the main thread.
         try:
             import AppKit
@@ -362,15 +375,38 @@ class DailyStreamApp(rumps.App):
         rumps.quit_application()
 
 
+def _patch_rumps_delegate():
+    """Patch rumps' internal NSApp delegate class.
+
+    rumps.App.run() replaces any delegate we set via setDelegate_(),
+    so we monkey-patch the class itself before run() is called.
+    This prevents the app from quitting when the last dialog is closed.
+    """
+    try:
+        import objc
+        from rumps.rumps import NSApp as RumpsNSApp
+
+        def _should_terminate(self, sender):
+            return False
+
+        _should_terminate = objc.selector(
+            _should_terminate,
+            selector=b"applicationShouldTerminateAfterLastWindowClosed:",
+            signature=b"Z@:@",
+        )
+        RumpsNSApp.applicationShouldTerminateAfterLastWindowClosed_ = _should_terminate
+    except Exception:
+        pass
+
+
 def run_app() -> None:
     """Entry point to run the menu bar app."""
-    # Fix activation policy so rumps can show menu bar icon
-    # even when launched from a non-bundle Python (e.g. venv, terminal)
     try:
         import AppKit
         ns_app = AppKit.NSApplication.sharedApplication()
-        # NSApplicationActivationPolicyAccessory = 1 (menu bar only, no dock icon)
         ns_app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
     except Exception:
         pass
+
+    _patch_rumps_delegate()
     DailyStreamApp().run()
