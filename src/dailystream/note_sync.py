@@ -27,9 +27,7 @@ logger = logging.getLogger(__name__)
 
 class LocalMarkdownSyncer:
     """Sync entries to a Markdown file inside the workspace directory.
-
     File layout::
-
         <workspace>/
           stream.md            ← this file
           screenshots/         ← all images live here (workspace-level)

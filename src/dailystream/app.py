@@ -13,6 +13,82 @@ from .capture import take_screenshot, grab_clipboard, save_clipboard_image
 from .hotkeys import HotkeyManager
 
 
+def _activate_and_focus() -> None:
+    """Activate the app and schedule focus on the alert's text field.
+
+    This fixes the invisible cursor issue caused by
+    NSApplicationActivationPolicyAccessory — the app doesn't auto-become
+    the key application, so the NSTextField inside the NSAlert never gets
+    firstResponder status.
+
+    We use an NSTimer on the main run-loop to set focus 50ms later,
+    which is after NSAlert.runModal() has presented the window.
+    """
+    try:
+        import AppKit
+
+        # 1) Bring app to front
+        ns_app = AppKit.NSApplication.sharedApplication()
+        ns_app.activateIgnoringOtherApps_(True)
+
+        # 2) Schedule focus via NSTimer
+        class _FocusTarget(AppKit.NSObject):
+            def fire_(self, timer):
+                try:
+                    key_win = AppKit.NSApplication.sharedApplication().keyWindow()
+                    if key_win is None:
+                        return
+                    _focus_first_editable(key_win.contentView(), key_win)
+                except Exception:
+                    pass
+
+        # Must keep a reference so the target isn't GC'd before the timer fires
+        target = _FocusTarget.alloc().init()
+        _activate_and_focus._timer_target = target  # prevent GC
+
+        AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.05,  # 50ms — enough for the alert to appear
+            target,
+            b"fire:",
+            None,
+            False,
+        )
+    except Exception:
+        # Fallback: at least try activating without focus scheduling
+        try:
+            import AppKit
+            AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        except Exception:
+            pass
+
+
+def _focus_first_editable(view, window) -> bool:
+    """Recursively find the first editable NSTextField and make it firstResponder."""
+    if view is None:
+        return False
+    try:
+        import AppKit
+        if isinstance(view, AppKit.NSTextField) and view.isEditable():
+            window.makeFirstResponder_(view)
+            return True
+        for subview in view.subviews():
+            if _focus_first_editable(subview, window):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _run_window(win: rumps.Window):
+    """Run a rumps.Window with proper app activation and input focus.
+
+    Call this instead of ``win.run()`` to ensure the text input cursor
+    is visible in the dialog.
+    """
+    _activate_and_focus()
+    return win.run()
+
+
 class DailyStreamApp(rumps.App):
     """macOS menu bar tray application for DailyStream."""
 
@@ -95,7 +171,7 @@ class DailyStreamApp(rumps.App):
             ok="Create",
             cancel="Cancel",
         )
-        resp = win.run()
+        resp = _run_window(win)
         if resp.clicked != 1:
             return
 
@@ -314,7 +390,7 @@ class DailyStreamApp(rumps.App):
                     ok="Save",
                     cancel="Cancel",
                 )
-                resp = win.run()
+                resp = _run_window(win)
                 if resp.clicked != 1:
                     return
 
