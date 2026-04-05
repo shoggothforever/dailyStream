@@ -187,3 +187,91 @@ class TestFullLifecycle:
         ctx_path = wm.workspace_dir / "pipelines" / pipe / "context.json"
         data = read_json(ctx_path)
         assert data["entries"][0]["synced"] is True
+
+    def test_realtime_mode_end_generates_timeline(self, tmp_workspace, tmp_config_dir):
+        """Realtime mode: end generates timeline with AI placeholders."""
+        config = Config.load()
+
+        wm = WorkspaceManager()
+        ws_dir = wm.create(
+            base_path=tmp_workspace, title="实时模式E2E", ai_mode="realtime"
+        )
+        pm = PipelineManager(ws_dir)
+        pm.create("dev")
+        wm.add_pipeline("dev")
+        wm.activate_pipeline("dev")
+
+        # Add text entry (no AI analysis for text type)
+        pm.add_entry("dev", "text", "Hello world", "文本记录")
+
+        # Manually write a fake ai_analyses.json (simulating what the queue would do)
+        from dailystream.config import write_json as wj
+        ai_path = ws_dir / "pipelines" / "dev" / "ai_analyses.json"
+        wj(ai_path, {
+            "pipeline_name": "dev",
+            "model": "test-model",
+            "analyses": [],
+            "daily_summary": None,
+        })
+
+        report_path = wm.end(config=config)
+        assert report_path is not None
+
+        report = Path(report_path).read_text(encoding="utf-8")
+        assert "实时模式E2E" in report
+        assert "**AI Mode**: realtime" in report
+
+    def test_daily_report_mode_end_includes_summary(self, tmp_workspace, tmp_config_dir):
+        """Daily report mode: end generates timeline with AI summary section."""
+        config = Config.load()
+
+        wm = WorkspaceManager()
+        ws_dir = wm.create(
+            base_path=tmp_workspace, title="日报模式E2E", ai_mode="daily_report"
+        )
+        pm = PipelineManager(ws_dir)
+        pm.create("task1", description="前端开发", goal="完成组件")
+        wm.add_pipeline("task1")
+        wm.activate_pipeline("task1")
+
+        pm.add_entry("task1", "text", "Started coding", "开始编码")
+
+        # Pre-populate ai_analyses.json and ai_daily_summary.json
+        from dailystream.config import write_json as wj
+
+        ai_path = ws_dir / "pipelines" / "task1" / "ai_analyses.json"
+        wj(ai_path, {
+            "pipeline_name": "task1",
+            "model": "test-model",
+            "analyses": [
+                {
+                    "entry_index": 0,
+                    "timestamp": pm.get_entries("task1")[0]["timestamp"],
+                    "input_type": "text",
+                    "description": "Developer started coding",
+                    "category": "coding",
+                    "key_elements": ["code"],
+                    "analyzed_at": now_iso(),
+                    "status": "completed",
+                }
+            ],
+            "daily_summary": "前端开发相关工作",
+        })
+
+        summary_path = ws_dir / "ai_daily_summary.json"
+        wj(summary_path, {
+            "generated_at": now_iso(),
+            "model": "test-model",
+            "pipeline_summaries": {"task1": "完成了前端组件开发"},
+            "overall_summary": "今日主要完成前端开发任务。",
+        })
+
+        # End workspace (skip actual AI calls by not having anthropic)
+        report_path = wm.end(config=config)
+        assert report_path is not None
+
+        report = Path(report_path).read_text(encoding="utf-8")
+        assert "日报模式E2E" in report
+        assert "**AI Mode**: daily_report" in report
+        assert "AI Daily Summary" in report
+        assert "今日主要完成前端开发任务" in report

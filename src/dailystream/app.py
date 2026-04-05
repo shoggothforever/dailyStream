@@ -2,7 +2,7 @@
 
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import rumps
 
@@ -11,6 +11,9 @@ from .workspace import WorkspaceManager, choose_folder_dialog
 from .pipeline import PipelineManager
 from .capture import take_screenshot, grab_clipboard, save_clipboard_image, capture_screen_region
 from .hotkeys import HotkeyManager
+
+if TYPE_CHECKING:
+    from .ai_analyzer import AnalysisQueue
 
 
 # --- Focus helper (ObjC class registered once at module level) ---
@@ -103,17 +106,37 @@ class DailyStreamApp(rumps.App):
         self.pm: Optional[PipelineManager] = None
         self.hotkey_mgr: Optional[HotkeyManager] = None
         self._capturing = False  # prevent double-trigger from hotkey + menu click
+        self._analysis_queue: Optional["AnalysisQueue"] = None
 
         if self.wm.workspace_dir:
             self.pm = PipelineManager(
                 self.wm.workspace_dir,
                 screenshot_save_path=self.config.screenshot_save_path,
             )
+            # Initialize AI analysis queue if realtime mode
+            self._init_analysis_queue()
 
         self._build_menu()
         self._start_hotkeys()
         self._register_preset_hotkeys()
         self._update_title()
+
+    def _init_analysis_queue(self) -> None:
+        """Initialize the AI analysis queue for realtime mode."""
+        if (
+            self.wm.meta
+            and getattr(self.wm.meta, "ai_mode", "off") == "realtime"
+            and self.wm.workspace_dir
+        ):
+            try:
+                from .ai_analyzer import AnalysisQueue
+
+                self._analysis_queue = AnalysisQueue(
+                    self.config, self.wm.workspace_dir
+                )
+            except Exception:
+                import traceback
+                traceback.print_exc()
 
     # --- Menu construction ---
 
@@ -245,14 +268,37 @@ class DailyStreamApp(rumps.App):
         if not folder:
             return
 
-        self.wm.create(base_path=folder, title=title)
+        # Ask for AI mode
+        ai_mode = self.config.ai_default_mode or "off"
+        ai_win = rumps.Window(
+            message=(
+                "Select AI analysis mode:\n\n"
+                "  off          — No AI analysis\n"
+                "  realtime   — Analyse each screenshot/URL right after capture\n"
+                "  daily_report — Analyse everything when workspace ends (daily report)\n\n"
+                "Enter: off / realtime / daily_report"
+            ),
+            title="AI Mode",
+            default_text=ai_mode,
+            ok="OK",
+            cancel="Skip (off)",
+        )
+        ai_resp = _run_window(ai_win)
+        if ai_resp.clicked == 1:
+            chosen = ai_resp.text.strip().lower()
+            if chosen in ("off", "realtime", "daily_report"):
+                ai_mode = chosen
+
+        self.wm.create(base_path=folder, title=title, ai_mode=ai_mode)
         self.pm = PipelineManager(
             self.wm.workspace_dir,
             screenshot_save_path=self.config.screenshot_save_path,
         )
+        self._init_analysis_queue()
         self._rebuild_pipeline_menu()
         self._update_title()
-        rumps.notification("DailyStream", "Workspace created", str(self.wm.workspace_dir))
+        mode_label = f" (AI: {ai_mode})" if ai_mode != "off" else ""
+        rumps.notification("DailyStream", "Workspace created", f"{self.wm.workspace_dir}{mode_label}")
 
     def _on_open_workspace(self, _) -> None:
         """Open (resume) an existing workspace directory."""
@@ -291,6 +337,7 @@ class DailyStreamApp(rumps.App):
                 ws_dir,
                 screenshot_save_path=self.config.screenshot_save_path,
             )
+            self._init_analysis_queue()
             self._rebuild_pipeline_menu()
             self._update_title()
             title = self.wm.meta.title or ws_dir.name
@@ -302,7 +349,14 @@ class DailyStreamApp(rumps.App):
         if not self.wm.is_active:
             rumps.alert("No Workspace", "No active workspace to end.")
             return
-        report = self.wm.end(config=self.config)
+        report = self.wm.end(config=self.config, analysis_queue=self._analysis_queue)
+        # Shutdown the analysis queue after end
+        if self._analysis_queue is not None:
+            try:
+                self._analysis_queue.shutdown()
+            except Exception:
+                pass
+            self._analysis_queue = None
         self.pm = None
         self._rebuild_pipeline_menu()
         self._update_title()
@@ -544,6 +598,8 @@ class DailyStreamApp(rumps.App):
                         desc = resp.text.strip()
                         entry = self.pm.add_entry(pipeline, "image", str(path), desc)
                         self._sync_entry(pipeline, entry)
+                        # Enqueue AI analysis (realtime mode)
+                        self._enqueue_analysis(pipeline, entry)
                         rumps.notification("DailyStream", f"Saved to {pipeline}", desc or path.name)
                     except Exception:
                         import traceback
@@ -600,6 +656,8 @@ class DailyStreamApp(rumps.App):
                 desc = resp.text.strip()
                 entry = self.pm.add_entry(pipeline, content_type, actual_content, desc)
                 self._sync_entry(pipeline, entry)
+                # Enqueue AI analysis (realtime mode)
+                self._enqueue_analysis(pipeline, entry)
                 rumps.notification("DailyStream", f"Saved to {pipeline}", desc or preview)
             except Exception:
                 import traceback
@@ -640,6 +698,38 @@ class DailyStreamApp(rumps.App):
             import traceback
             traceback.print_exc()  # fire-and-forget, but log errors
 
+    def _enqueue_analysis(self, pipeline_name: str, entry) -> None:
+        """Enqueue an entry for AI analysis (realtime mode only)."""
+        if self._analysis_queue is None:
+            return
+        if not self.wm.meta or getattr(self.wm.meta, "ai_mode", "off") != "realtime":
+            return
+
+        # Determine entry index (last entry in the pipeline)
+        entry_index = 0
+        if self.pm:
+            entries = self.pm.get_entries(pipeline_name)
+            entry_index = max(0, len(entries) - 1)
+
+        # Convert entry to dict
+        if isinstance(entry, dict):
+            entry_dict = entry
+        elif hasattr(entry, "__dataclass_fields__"):
+            from dataclasses import asdict
+            entry_dict = asdict(entry)
+        else:
+            entry_dict = {
+                "timestamp": entry.timestamp,
+                "input_type": entry.input_type,
+                "input_content": entry.input_content,
+                "description": entry.description,
+            }
+
+        # Only enqueue analysable types
+        itype = entry_dict.get("input_type", "")
+        if itype in ("image", "url"):
+            self._analysis_queue.enqueue(pipeline_name, entry_index, entry_dict)
+
     # --- Hotkeys ---
 
     def _start_hotkeys(self) -> None:
@@ -655,6 +745,11 @@ class DailyStreamApp(rumps.App):
             pass  # hotkeys may fail without accessibility permission
 
     def _on_quit(self, _) -> None:
+        if self._analysis_queue is not None:
+            try:
+                self._analysis_queue.shutdown()
+            except Exception:
+                pass
         if self.hotkey_mgr:
             self.hotkey_mgr.stop()
         rumps.quit_application()

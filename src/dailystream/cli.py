@@ -18,7 +18,13 @@ def cli():
 @cli.command()
 @click.option("--path", type=click.Path(), default=None, help="Workspace storage path.")
 @click.option("--title", default=None, help="Workspace title.")
-def start(path: Optional[str], title: Optional[str]):
+@click.option(
+    "--ai-mode",
+    type=click.Choice(["off", "realtime", "daily_report"], case_sensitive=False),
+    default=None,
+    help="AI analysis mode: off / realtime / daily_report. Default reads config.ai_default_mode.",
+)
+def start(path: Optional[str], title: Optional[str], ai_mode: Optional[str]):
     """Start a new workspace."""
     wm = WorkspaceManager()
     if wm.is_active:
@@ -31,8 +37,13 @@ def start(path: Optional[str], title: Optional[str]):
         from .config import DEFAULT_WORKSPACE_ROOT
         base = DEFAULT_WORKSPACE_ROOT
 
-    ws_dir = wm.create(base_path=base, title=title)
-    click.echo(f"✅ Workspace created: {ws_dir}")
+    # Resolve ai_mode: CLI option > config default > "off"
+    config = Config.load()
+    resolved_ai_mode = ai_mode or getattr(config, "ai_default_mode", "off") or "off"
+
+    ws_dir = wm.create(base_path=base, title=title, ai_mode=resolved_ai_mode)
+    mode_label = f" (AI: {resolved_ai_mode})" if resolved_ai_mode != "off" else ""
+    click.echo(f"✅ Workspace created: {ws_dir}{mode_label}")
 
 
 @cli.command()
@@ -149,6 +160,37 @@ def feed(content: str, desc: str, input_type: str):
         import traceback
         traceback.print_exc()
 
+    # Trigger AI analysis (realtime mode, synchronous for CLI)
+    ai_mode = getattr(wm.meta, "ai_mode", "off") or "off"
+    if ai_mode == "realtime" and input_type in ("image", "url"):
+        try:
+            from .ai_analyzer import ImageAnalyzer, AnalysisStore
+            from dataclasses import asdict
+
+            analyzer = ImageAnalyzer(config)
+            if analyzer.available:
+                entry_dict = asdict(entry) if hasattr(entry, "__dataclass_fields__") else entry
+                entries = pm.get_entries(pipeline_name)
+                entry_index = max(0, len(entries) - 1)
+
+                result = None
+                if input_type == "image" and Path(content).exists():
+                    result = analyzer.analyze_image(Path(content), user_hint=desc)
+                elif input_type == "url":
+                    result = analyzer.analyze_url(content, user_hint=desc)
+
+                if result is not None:
+                    result.entry_index = entry_index
+                    result.timestamp = entry_dict.get("timestamp", "")
+                    store_path = wm.workspace_dir / "pipelines" / pipeline_name / "ai_analyses.json"
+                    store = AnalysisStore(store_path, pipeline_name=pipeline_name)
+                    store.set_model(analyzer._model)
+                    store.append(result)
+                    click.echo(f"🤖 AI: {result.description[:80]}")
+        except Exception:
+            import traceback
+            traceback.print_exc()
+
 
 @cli.command()
 def status():
@@ -164,11 +206,77 @@ def status():
     click.echo(f"   Created: {meta.created_at}")
     click.echo(f"   Active pipeline: {meta.active_pipeline or 'none'}")
     click.echo(f"   Pipelines: {', '.join(meta.pipelines) if meta.pipelines else 'none'}")
+    ai_mode = getattr(meta, "ai_mode", "off") or "off"
+    click.echo(f"   AI Mode: {ai_mode}")
 
     if meta.active_pipeline:
         pm = PipelineManager(wm.workspace_dir)
         entries = pm.get_entries(meta.active_pipeline)
         click.echo(f"   Entries in '{meta.active_pipeline}': {len(entries)}")
+
+
+@cli.command()
+@click.option("--force", is_flag=True, help="Re-analyse entries that already have results.")
+def analyze(force: bool):
+    """Run AI analysis on all un-analysed entries in the current workspace."""
+    wm = WorkspaceManager()
+    if not wm.is_active:
+        click.echo("⚠️  No active workspace.")
+        return
+
+    config = Config.load()
+    pm = PipelineManager(wm.workspace_dir, screenshot_save_path=config.screenshot_save_path)
+
+    try:
+        from .ai_analyzer import ImageAnalyzer, AnalysisStore, AnalysisResult
+    except ImportError:
+        click.echo("⚠️  AI module not available. Install with: pip install 'dailystream[ai]'")
+        return
+
+    analyzer = ImageAnalyzer(config)
+    if not analyzer.available:
+        click.echo("⚠️  AI not available. Check API key (DAILYSTREAM_AI_KEY or config.ai_api_key).")
+        return
+
+    total_new = 0
+    for pipeline_name in pm.list_pipelines():
+        entries = pm.get_entries(pipeline_name)
+        store_path = pm.get_ai_analyses_path(pipeline_name)
+        store = AnalysisStore(store_path, pipeline_name=pipeline_name)
+
+        for idx, entry in enumerate(entries):
+            itype = entry.get("input_type", "")
+            ts = entry.get("timestamp", "")
+            content = entry.get("input_content", "")
+            desc = entry.get("description", "")
+
+            if itype not in ("image", "url"):
+                continue
+            if not force and store.has_analysis(idx, ts):
+                continue
+
+            click.echo(f"  🔍 [{pipeline_name}] #{idx} ({itype}): {desc[:40] or content[:40]}...", nl=False)
+
+            result = None
+            if itype == "image" and Path(content).exists():
+                result = analyzer.analyze_image(Path(content), user_hint=desc)
+            elif itype == "url":
+                result = analyzer.analyze_url(content, user_hint=desc)
+
+            if result is not None:
+                result.entry_index = idx
+                result.timestamp = ts
+                store.append(result)
+                click.echo(f" ✅ {result.category}")
+                total_new += 1
+            else:
+                fail = AnalysisResult.failed(idx, ts, itype, "Analysis returned None")
+                store.append(fail)
+                click.echo(" ❌ failed")
+
+        store.set_model(analyzer._model)
+
+    click.echo(f"\n🤖 Analysis complete: {total_new} new results.")
 
 
 @cli.command("app")

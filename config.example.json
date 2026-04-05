@@ -12,7 +12,7 @@
   "note_sync_backend": "markdown",
   "obsidian_vault_path": "",
 
-  "_comment_templates": "以下模板字段均为可选。不设置则使用内置默认模板。可用占位符: {time} {type} {description} {content} {image} {link} {quote} {pipeline}",
+  "_comment_templates": "以下模板字段均为可选。不设置则使用内置默认模板。可用占位符: {time} {type} {description} {content} {image} {link} {quote} {pipeline} {ai_analysis} {ai_category} {ai_elements}",
 
   "entry_templates": {
     "image": "**{time}** · {type}\n\n{description}\n\n{image}\n\n---",
@@ -20,5 +20,14 @@
     "text":  "**{time}** · {type}\n\n{description}\n\n{quote}\n\n---"
   },
   "obsidian_templates": null,
-  "timeline_templates": null
+  "timeline_templates": null,
+
+  "_comment_ai": "AI 分析配置。ai_mode 是 workspace 级别属性（在创建 workspace 时选择），不在此配置。环境变量 DAILYSTREAM_AI_KEY 优先于 ai_api_key。安装 AI 依赖: pip install 'dailystream[ai]'",
+  "ai_api_key": "",
+  "ai_model": "claude-sonnet-4-20250514",
+  "ai_timeout": 30,
+  "ai_prompt": "",
+  "ai_max_image_size_kb": 150,
+  "ai_batch_size": 10,
+  "ai_default_mode": "off"
 }

@@ -52,6 +52,13 @@ _DEFAULT_TIMELINE_TEMPLATES: dict[str, str] = {
     "text":  "### {time} — [{pipeline}] ({type})\n\n{description}\n\n{quote}\n",
 }
 
+# Timeline report with AI analysis — shown when ai_mode != "off"
+_DEFAULT_TIMELINE_AI_TEMPLATES: dict[str, str] = {
+    "image": "### {time} — [{pipeline}] ({type}) `{ai_category}`\n\n{description}\n\n> 🤖 {ai_analysis}\n\n🏷️ {ai_elements}\n\n{image}\n",
+    "url":   "### {time} — [{pipeline}] ({type}) `{ai_category}`\n\n{description}\n\n> 🤖 {ai_analysis}\n\n🏷️ {ai_elements}\n\n{link}\n",
+    "text":  "### {time} — [{pipeline}] ({type})\n\n{description}\n\n{quote}\n",
+}
+
 # Fallback template when input_type is unknown
 _FALLBACK_TEMPLATE = "**{time}** · {type}\n\n{description}\n\n{content}\n\n---"
 
@@ -72,6 +79,10 @@ class EntryContext:
     link: str = ""
     quote: str = ""
     pipeline: str = ""
+    # AI analysis fields (populated when ai_mode != "off")
+    ai_analysis: str = ""
+    ai_category: str = ""
+    ai_elements: str = ""
 
 
 def build_context(
@@ -85,6 +96,9 @@ def build_context(
     workspace_dir: Optional[Path] = None,
     obsidian_rel_img: Optional[str] = None,
     content_max_len: int = 500,
+    ai_analysis: str = "",
+    ai_category: str = "",
+    ai_elements: str = "",
 ) -> EntryContext:
     """Build a template context dict from entry data.
 
@@ -98,6 +112,12 @@ def build_context(
         Pre-computed relative image path for Obsidian wikilinks.
     content_max_len
         Max characters for text quoting.
+    ai_analysis
+        AI-generated description of the entry content.
+    ai_category
+        AI-determined category (e.g. coding, design, browsing).
+    ai_elements
+        Comma-separated AI-identified key elements.
     """
     time_short = short_time(timestamp)
 
@@ -107,6 +127,9 @@ def build_context(
         description=description,
         content=content,
         pipeline=pipeline,
+        ai_analysis=ai_analysis,
+        ai_category=ai_category,
+        ai_elements=ai_elements,
     )
 
     # Build image markdown
@@ -161,6 +184,9 @@ def render_entry(
         link=ctx.link,
         quote=ctx.quote,
         pipeline=ctx.pipeline,
+        ai_analysis=ctx.ai_analysis,
+        ai_category=ctx.ai_category,
+        ai_elements=ctx.ai_elements,
     )
 
     # Clean up blank lines from empty placeholders
@@ -209,9 +235,22 @@ def get_obsidian_templates(config_templates: Optional[dict[str, str]] = None) ->
     return templates
 
 
-def get_timeline_templates(config_templates: Optional[dict[str, str]] = None) -> dict[str, str]:
-    """Return timeline templates, merging user overrides on top of defaults."""
-    templates = dict(_DEFAULT_TIMELINE_TEMPLATES)
+def get_timeline_templates(
+    config_templates: Optional[dict[str, str]] = None,
+    ai_mode: str = "off",
+) -> dict[str, str]:
+    """Return timeline templates, merging user overrides on top of defaults.
+
+    When *ai_mode* is not ``"off"``, the AI-enhanced template set is used
+    as the base so that ``{ai_analysis}`` / ``{ai_category}`` /
+    ``{ai_elements}`` placeholders are included.
+    """
+    base = (
+        _DEFAULT_TIMELINE_AI_TEMPLATES
+        if ai_mode != "off"
+        else _DEFAULT_TIMELINE_TEMPLATES
+    )
+    templates = dict(base)
     if config_templates:
         templates.update(config_templates)
     return templates

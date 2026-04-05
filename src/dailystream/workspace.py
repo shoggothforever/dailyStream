@@ -29,6 +29,7 @@ class WorkspaceMeta:
     title: Optional[str] = None
     active_pipeline: Optional[str] = None
     pipelines: list[str] = field(default_factory=list)
+    ai_mode: str = "off"  # "off" | "realtime" | "daily_report"
 
 
 class WorkspaceManager:
@@ -92,7 +93,12 @@ class WorkspaceManager:
         s = re.sub(r'[_\s]+', '_', s).strip('_. ')
         return s[:64] if s else ""
 
-    def create(self, base_path: Optional[Path] = None, title: Optional[str] = None) -> Path:
+    def create(
+        self,
+        base_path: Optional[Path] = None,
+        title: Optional[str] = None,
+        ai_mode: str = "off",
+    ) -> Path:
         """Create a new workspace. Returns workspace directory path.
 
         Directory layout::
@@ -128,22 +134,59 @@ class WorkspaceManager:
             workspace_path=str(workspace_dir),
             created_at=now_iso(),
             title=title or workspace_id,
+            ai_mode=ai_mode,
         )
         self.save_meta()
         set_active_workspace_path(workspace_dir)
         return workspace_dir
 
-    def end(self, config: Optional["Config"] = None) -> Optional[str]:
-        """End the current workspace. Returns path to timeline report or None."""
+    def end(self, config: Optional["Config"] = None, analysis_queue=None) -> Optional[str]:
+        """End the current workspace. Returns path to timeline report or None.
+
+        Parameters
+        ----------
+        config
+            Application config (needed for timeline generation and AI).
+        analysis_queue
+            The ``AnalysisQueue`` instance (realtime mode).  If provided,
+            the queue is drained before generating the report so that
+            all pending analyses are flushed to ``ai_analyses.json``.
+        """
         if not self.is_active:
             return None
         self._meta.ended_at = now_iso()
         self.save_meta()
         set_active_workspace_path(None)
 
+        ai_mode = self._meta.ai_mode or "off"
+
+        # --- AI analysis dispatch ---
+        if ai_mode == "realtime" and analysis_queue is not None:
+            # Wait for the background queue to finish all pending tasks
+            try:
+                analysis_queue.drain(timeout=120.0)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+
+        elif ai_mode == "daily_report" and config is not None:
+            # Batch-analyse all un-analysed entries, then generate summary
+            try:
+                from .ai_analyzer import batch_analyze_workspace, generate_daily_summary
+
+                batch_analyze_workspace(config, self._workspace_dir, self._meta)
+                generate_daily_summary(config, self._workspace_dir, self._meta)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+
         # Generate timeline report
         from .timeline import generate_timeline
-        report_path = generate_timeline(self._workspace_dir, self._meta, config=config)
+        report_path = generate_timeline(
+            self._workspace_dir,
+            self._meta,
+            config=config,
+        )
 
         return str(report_path) if report_path else None
 

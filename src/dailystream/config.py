@@ -37,10 +37,23 @@ class Config:
     # Keys: "image", "url", "text" (or any custom type).
     # Available placeholders: {time}, {type}, {description}, {content},
     #   {image}, {link}, {quote}, {pipeline}
+    #   AI placeholders (when ai_mode != "off"):
+    #   {ai_analysis}, {ai_category}, {ai_elements}
     # Set to None / omit to use built-in defaults.
     entry_templates: Optional[dict[str, str]] = None
     obsidian_templates: Optional[dict[str, str]] = None
     timeline_templates: Optional[dict[str, str]] = None
+
+    # --- AI analysis configuration ---
+    # NOTE: ai_mode ("off"/"realtime"/"daily_report") is a workspace-level
+    # attribute stored in workspace_meta.json, NOT here.
+    ai_api_key: str = ""  # Anthropic API key (env DAILYSTREAM_AI_KEY takes priority)
+    ai_model: str = "claude-sonnet-4-20250514"
+    ai_timeout: int = 30  # seconds
+    ai_prompt: str = ""  # custom analysis prompt (empty = use built-in default)
+    ai_max_image_size_kb: int = 150  # compress images before sending to AI
+    ai_batch_size: int = 10  # max images per batch in daily_report mode
+    ai_default_mode: str = "off"  # default ai_mode when creating a new workspace
 
     @classmethod
     def load(cls) -> "Config":

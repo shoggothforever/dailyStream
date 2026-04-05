@@ -36,6 +36,10 @@ class PipelineManager:
     def _context_path(self, name: str) -> Path:
         return self._pipeline_dir(name) / "context.json"
 
+    def get_ai_analyses_path(self, name: str) -> Path:
+        """Return the path to the AI analyses file for a pipeline."""
+        return self._pipeline_dir(name) / "ai_analyses.json"
+
     def _screenshots_dir(self) -> Path:
         """Screenshots directory.
 
