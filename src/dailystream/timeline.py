@@ -68,6 +68,14 @@ def generate_timeline(
     lines.append("## By Pipeline\n")
     for pname, entries in pipelines_data.items():
         lines.append(f"### {pname} ({len(entries)} entries)\n")
+        # Show pipeline description and goal if available
+        meta = pm.get_pipeline_meta(pname)
+        if meta.get("description"):
+            lines.append(f"> **📝 Description**: {meta['description']}")
+        if meta.get("goal"):
+            lines.append(f"> **🎯 Goal**: {meta['goal']}")
+        if meta.get("description") or meta.get("goal"):
+            lines.append("")
         for entry in entries:
             ts = entry.get("timestamp", "?")
             time_short = SHORT_TIME_PATTERN(ts)

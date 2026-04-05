@@ -21,6 +21,14 @@ class Config:
     hotkey_screenshot: str = "<ctrl>+<shift>+s"
     hotkey_clipboard: str = "<ctrl>+<shift>+v"
     screenshot_mode: str = "interactive"  # "interactive" | "fullscreen"
+    screenshot_save_path: str = ""  # Custom screenshot save location. Empty = <workspace>/screenshots/
+    # Predefined screenshot regions.
+    # Each item: {"name": "...", "region": "x,y,w,h", "hotkey": "<cmd>+3"}
+    # "hotkey" is optional — when set, pressing that key combo captures the
+    # region instantly without opening a menu.
+    # Example: [{"name": "Left Half", "region": "0,0,960,1080", "hotkey": "<cmd>+3"}]
+    # When presets are defined, user can pick one or fall back to free selection.
+    screenshot_presets: Optional[list[dict[str, str]]] = None
     default_workspace_path: str = ""
     note_sync_backend: str = "markdown"  # "markdown" | "obsidian" | "both" | "none"
     obsidian_vault_path: str = ""

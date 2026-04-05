@@ -20,8 +20,15 @@ class PipelineEntry:
 class PipelineManager:
     """Manages pipeline lifecycle within a workspace."""
 
-    def __init__(self, workspace_dir: Path) -> None:
+    def __init__(
+        self,
+        workspace_dir: Path,
+        screenshot_save_path: str = "",
+    ) -> None:
         self._workspace_dir = workspace_dir
+        self._custom_screenshots_dir: Optional[Path] = None
+        if screenshot_save_path:
+            self._custom_screenshots_dir = Path(screenshot_save_path)
 
     def _pipeline_dir(self, name: str) -> Path:
         return self._workspace_dir / "pipelines" / name
@@ -30,11 +37,32 @@ class PipelineManager:
         return self._pipeline_dir(name) / "context.json"
 
     def _screenshots_dir(self) -> Path:
-        """Screenshots are stored at workspace root: <workspace>/screenshots/"""
+        """Screenshots directory.
+
+        Returns the custom path from config if set, otherwise falls back
+        to the default ``<workspace>/screenshots/``.
+        """
+        if self._custom_screenshots_dir is not None:
+            return self._custom_screenshots_dir
         return self._workspace_dir / "screenshots"
 
-    def create(self, name: str) -> Path:
-        """Create a new pipeline. Returns pipeline directory."""
+    def create(
+        self,
+        name: str,
+        description: str = "",
+        goal: str = "",
+    ) -> Path:
+        """Create a new pipeline. Returns pipeline directory.
+
+        Parameters
+        ----------
+        name
+            Pipeline name (used as directory name).
+        description
+            Free-form description of what this pipeline is about.
+        goal
+            The objective / goal this pipeline aims to achieve.
+        """
         pipeline_dir = self._pipeline_dir(name)
         pipeline_dir.mkdir(parents=True, exist_ok=True)
         self._screenshots_dir().mkdir(exist_ok=True)
@@ -45,9 +73,21 @@ class PipelineManager:
             write_json(ctx_path, {
                 "name": name,
                 "created_at": now_iso(),
+                "description": description,
+                "goal": goal,
                 "entries": [],
             })
         return pipeline_dir
+
+    def get_pipeline_meta(self, name: str) -> dict:
+        """Get pipeline metadata (name, description, goal, created_at)."""
+        ctx = read_json(self._context_path(name))
+        return {
+            "name": ctx.get("name", name),
+            "description": ctx.get("description", ""),
+            "goal": ctx.get("goal", ""),
+            "created_at": ctx.get("created_at", ""),
+        }
 
     def list_pipelines(self) -> list[str]:
         """List all pipeline names in workspace."""

@@ -2,6 +2,12 @@
   "hotkey_screenshot": "<cmd>+1",
   "hotkey_clipboard": "<cmd>+2",
   "screenshot_mode": "interactive",
+  "screenshot_save_path": "",
+  "screenshot_presets": [
+    {"name": "Left Half", "region": "0,0,960,1080", "hotkey": "<cmd>+3"},
+    {"name": "Right Half", "region": "960,0,960,1080", "hotkey": "<cmd>+4"},
+    {"name": "Center Area", "region": "280,140,1360,800"}
+  ],
   "default_workspace_path": "",
   "note_sync_backend": "markdown",
   "obsidian_vault_path": "",

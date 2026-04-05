@@ -75,7 +75,13 @@ def _parse_hotkey(hotkey_str: str) -> Tuple[int, int]:
 
 
 class HotkeyManager:
-    """Register and manage global hotkeys using macOS CGEventTap."""
+    """Register and manage global hotkeys using macOS CGEventTap.
+
+    Supports two built-in hotkeys (screenshot / clipboard) plus an arbitrary
+    number of *extra* hotkeys that can be added/removed at runtime via
+    :meth:`register_extra` and :meth:`unregister_extra`.  Extra hotkeys are
+    used for per-preset screenshot shortcuts.
+    """
 
     def __init__(
         self,
@@ -90,10 +96,41 @@ class HotkeyManager:
         self._ss_keycode, self._ss_modifiers = _parse_hotkey(hotkey_screenshot)
         self._cb_keycode, self._cb_modifiers = _parse_hotkey(hotkey_clipboard)
 
+        # Extra hotkeys: {label: (keycode, modifiers, callback)}
+        self._extra: Dict[str, Tuple[int, int, Callable]] = {}
+        self._extra_lock = threading.Lock()
+
         self._tap: Optional[Any] = None  # type: ignore[assignment]
         self._run_loop_source = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
+
+    # --- Dynamic extra-hotkey management ---
+
+    def register_extra(self, label: str, hotkey_str: str, callback: Callable) -> bool:
+        """Register an extra hotkey.  Returns True on success.
+
+        *label* is a unique identifier (e.g. preset name) used to unregister
+        later.  If the hotkey string cannot be parsed, returns False.
+        """
+        keycode, modifiers = _parse_hotkey(hotkey_str)
+        if keycode == -1:
+            return False
+        with self._extra_lock:
+            self._extra[label] = (keycode, modifiers, callback)
+        return True
+
+    def unregister_extra(self, label: str) -> None:
+        """Remove an extra hotkey by label."""
+        with self._extra_lock:
+            self._extra.pop(label, None)
+
+    def clear_extras(self) -> None:
+        """Remove all extra hotkeys."""
+        with self._extra_lock:
+            self._extra.clear()
+
+    # --- Core lifecycle ---
 
     def start(self) -> None:
         """Start listening for hotkeys in a background thread with its own CFRunLoop."""
@@ -146,6 +183,13 @@ class HotkeyManager:
             threading.Thread(target=self._safe_call, args=(self._on_screenshot,), daemon=True).start()
         elif keycode == self._cb_keycode and flags == self._cb_modifiers:
             threading.Thread(target=self._safe_call, args=(self._on_clipboard,), daemon=True).start()
+        else:
+            # Check extra hotkeys
+            with self._extra_lock:
+                for _label, (kc, mods, cb) in self._extra.items():
+                    if keycode == kc and flags == mods:
+                        threading.Thread(target=self._safe_call, args=(cb,), daemon=True).start()
+                        break
 
         return event
 

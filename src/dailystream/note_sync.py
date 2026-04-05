@@ -55,6 +55,7 @@ class LocalMarkdownSyncer:
         description: str,
         content: str,
         image_path: Optional[str] = None,
+        pipeline_meta: Optional[dict] = None,
     ) -> None:
         """Insert an entry into ``stream.md`` under its pipeline section.
 
@@ -62,6 +63,13 @@ class LocalMarkdownSyncer:
         is inserted at the **end of the matching ``## pipeline_name``
         section**.  This way switching between pipelines keeps each
         pipeline's entries grouped together.
+
+        Parameters
+        ----------
+        pipeline_meta
+            Optional dict with ``description`` and ``goal`` keys.
+            When a new pipeline heading is created, these are rendered
+            as a brief info block right after the heading.
         """
         # Build template context and render
         ctx = build_context(
@@ -83,10 +91,14 @@ class LocalMarkdownSyncer:
             existing = self._md_path.read_text(encoding="utf-8")
 
         heading = f"## {pipeline_name}"
+        meta_block = self._format_pipeline_meta(pipeline_meta)
 
         if not existing:
             # Brand-new file
-            full = f"# {workspace_title}\n\n{heading}\n\n{entry_block}\n"
+            full = f"# {workspace_title}\n\n{heading}\n"
+            if meta_block:
+                full += f"\n{meta_block}\n"
+            full += f"\n{entry_block}\n"
             self._md_path.write_text(full, encoding="utf-8")
             return
 
@@ -112,10 +124,27 @@ class LocalMarkdownSyncer:
                 updated = existing.rstrip("\n") + "\n\n" + entry_block + "\n"
             self._md_path.write_text(updated, encoding="utf-8")
         else:
-            # New pipeline — append the heading + entry at the end
-            addition = f"\n{heading}\n\n{entry_block}\n"
+            # New pipeline — append the heading + meta + entry at the end
+            addition = f"\n{heading}\n"
+            if meta_block:
+                addition += f"\n{meta_block}\n"
+            addition += f"\n{entry_block}\n"
             updated = existing.rstrip("\n") + "\n" + addition
             self._md_path.write_text(updated, encoding="utf-8")
+
+    @staticmethod
+    def _format_pipeline_meta(meta: Optional[dict]) -> str:
+        """Format pipeline description/goal as a Markdown info block."""
+        if not meta:
+            return ""
+        parts: list[str] = []
+        desc = meta.get("description", "")
+        goal = meta.get("goal", "")
+        if desc:
+            parts.append(f"> **📝 Description**: {desc}")
+        if goal:
+            parts.append(f"> **🎯 Goal**: {goal}")
+        return "\n".join(parts)
 
 
 class ObsidianSyncer:
@@ -209,8 +238,22 @@ class NoteSyncManager:
             if config.obsidian_vault_path:
                 self._obsidian = ObsidianSyncer(config.obsidian_vault_path, config)
 
-    def sync_entry(self, workspace_meta, pipeline_name: str, entry) -> None:
-        """Sync a single entry to configured backends. Fire-and-forget."""
+    def sync_entry(
+        self,
+        workspace_meta,
+        pipeline_name: str,
+        entry,
+        pipeline_meta: Optional[dict] = None,
+    ) -> None:
+        """Sync a single entry to configured backends. Fire-and-forget.
+
+        Parameters
+        ----------
+        pipeline_meta
+            Optional dict with ``description`` and ``goal`` keys.
+            Passed through to ``LocalMarkdownSyncer`` so that a new
+            pipeline heading includes the info block.
+        """
         if isinstance(entry, dict):
             entry_data = entry
         else:
@@ -239,6 +282,7 @@ class NoteSyncManager:
                     description=entry_data["description"],
                     content=entry_data["input_content"],
                     image_path=image_path,
+                    pipeline_meta=pipeline_meta,
                 )
             except Exception as e:
                 logger.warning(f"Local markdown sync failed: {e}")

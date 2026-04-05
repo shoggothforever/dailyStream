@@ -8,13 +8,176 @@ from typing import Optional, Tuple
 from .config import now_filename, CLIPBOARD_IMAGE_MARKER
 
 
-def take_screenshot(save_dir: Path, mode: str = "interactive") -> Optional[Path]:
+# --- Module-level ObjC overlay class (registered once) ---
+
+_OverlayView = None  # lazily created on first use
+_overlay_result: list[Optional[str]] = [None]  # shared result slot
+
+
+def _get_overlay_view_class():
+    """Return the _OverlayView ObjC class, creating it once."""
+    global _OverlayView
+    if _OverlayView is not None:
+        return _OverlayView
+
+    import AppKit
+
+    class _OverlayViewImpl(AppKit.NSView):
+        """Custom view that draws a selection rectangle."""
+
+        _origin = None
+        _current = None
+
+        def acceptsFirstResponder(self):
+            return True
+
+        def canBecomeKeyView(self):
+            return True
+
+        def mouseDown_(self, event):
+            self._origin = self.convertPoint_fromView_(event.locationInWindow(), None)
+            self._current = self._origin
+            self.setNeedsDisplay_(True)
+
+        def mouseDragged_(self, event):
+            self._current = self.convertPoint_fromView_(event.locationInWindow(), None)
+            self.setNeedsDisplay_(True)
+
+        def mouseUp_(self, event):
+            self._current = self.convertPoint_fromView_(event.locationInWindow(), None)
+            if self._origin and self._current:
+                o = self._origin
+                c = self._current
+                x = int(min(o.x, c.x))
+                # Convert from flipped AppKit coords → screen coords
+                frame = self.window().frame()
+                y_bottom = int(min(o.y, c.y))
+                h = int(abs(c.y - o.y))
+                w = int(abs(c.x - o.x))
+                # AppKit y=0 is bottom; screen y=0 is top
+                y = int(frame.size.height - y_bottom - h)
+                if w > 5 and h > 5:
+                    _overlay_result[0] = f"{x},{y},{w},{h}"
+            AppKit.NSApp.stopModal()
+
+        def keyDown_(self, event):
+            # Escape key → cancel
+            if event.keyCode() == 53:
+                _overlay_result[0] = None
+                AppKit.NSApp.stopModal()
+
+        def drawRect_(self, rect):
+            # Semi-transparent dark overlay
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0, 0, 0, 0.3).set()
+            AppKit.NSBezierPath.fillRect_(self.bounds())
+
+            if self._origin and self._current:
+                o = self._origin
+                c = self._current
+                sel_rect = AppKit.NSMakeRect(
+                    min(o.x, c.x),
+                    min(o.y, c.y),
+                    abs(c.x - o.x),
+                    abs(c.y - o.y),
+                )
+                # Clear the selected region (show through)
+                AppKit.NSColor.clearColor().set()
+                AppKit.NSBezierPath.fillRect_(sel_rect)
+                # Draw border
+                AppKit.NSColor.whiteColor().set()
+                path = AppKit.NSBezierPath.bezierPathWithRect_(sel_rect)
+                path.setLineWidth_(2.0)
+                path.stroke()
+
+                # Draw dimensions label
+                w = int(abs(c.x - o.x))
+                h = int(abs(c.y - o.y))
+                label = f"{w} × {h}"
+                attrs = {
+                    AppKit.NSFontAttributeName: AppKit.NSFont.systemFontOfSize_(14),
+                    AppKit.NSForegroundColorAttributeName: AppKit.NSColor.whiteColor(),
+                }
+                ns_str = AppKit.NSAttributedString.alloc().initWithString_attributes_(
+                    label, attrs
+                )
+                label_size = ns_str.size()
+                label_x = min(o.x, c.x) + (abs(c.x - o.x) - label_size.width) / 2
+                label_y = min(o.y, c.y) - label_size.height - 4
+                if label_y < 0:
+                    label_y = max(o.y, c.y) + 4
+                ns_str.drawAtPoint_(AppKit.NSMakePoint(label_x, label_y))
+
+    _OverlayView = _OverlayViewImpl
+    return _OverlayView
+
+
+def capture_screen_region() -> Optional[str]:
+    """Let the user drag-select a screen region and return its coordinates.
+
+    Opens a translucent full-screen overlay.  The user draws a rectangle by
+    clicking and dragging; on mouse-up the region string ``"x,y,w,h"`` is
+    returned (pixel coordinates in screen space).  Press **Escape** to cancel
+    (returns ``None``).
+
+    Uses PyObjC / AppKit — macOS only.
+    """
+    try:
+        import AppKit
+        import Quartz
+    except ImportError:
+        return None
+
+    # Reset shared result
+    _overlay_result[0] = None
+
+    OverlayView = _get_overlay_view_class()
+
+    # Get the main screen frame
+    screen = AppKit.NSScreen.mainScreen()
+    frame = screen.frame()
+
+    # Create a borderless, full-screen, topmost window
+    win = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        frame,
+        AppKit.NSWindowStyleMaskBorderless,
+        AppKit.NSBackingStoreBuffered,
+        False,
+    )
+    win.setLevel_(Quartz.kCGMaximumWindowLevelKey)
+    win.setOpaque_(False)
+    win.setBackgroundColor_(AppKit.NSColor.clearColor())
+    win.setIgnoresMouseEvents_(False)
+    win.setAcceptsMouseMovedEvents_(True)
+
+    overlay = OverlayView.alloc().initWithFrame_(frame)
+    win.setContentView_(overlay)
+    win.makeFirstResponder_(overlay)
+    win.makeKeyAndOrderFront_(None)
+
+    # Ensure our app is frontmost
+    AppKit.NSApp.activateIgnoringOtherApps_(True)
+
+    # Run modal (blocks until mouse-up or Escape)
+    AppKit.NSApp.runModalForWindow_(win)
+    win.orderOut_(None)
+
+    return _overlay_result[0]
+
+
+def take_screenshot(
+    save_dir: Path,
+    mode: str = "interactive",
+    region: Optional[str] = None,
+) -> Optional[Path]:
     """Call macOS screencapture to capture screenshot.
 
     Args:
         save_dir: Directory to save screenshot
         mode: "interactive" for user selection, "fullscreen" for entire screen
-    
+        region: Optional region string "x,y,w,h" for preset capture area.
+                When provided, ``screencapture -R x,y,w,h`` is used instead
+                of interactive or fullscreen mode.
+
     Saves to save_dir with a timestamped filename.
     Returns the screenshot path, or None if user cancelled.
     """
@@ -23,7 +186,13 @@ def take_screenshot(save_dir: Path, mode: str = "interactive") -> Optional[Path]
     save_path = save_dir / filename
 
     try:
-        if mode == "fullscreen":
+        if region:
+            # Preset region capture: -R x,y,w,h
+            result = subprocess.run(
+                ["screencapture", "-R", region, str(save_path)],
+                timeout=10,
+            )
+        elif mode == "fullscreen":
             # Capture entire screen without user interaction
             result = subprocess.run(
                 ["screencapture", str(save_path)],

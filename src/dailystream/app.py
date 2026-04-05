@@ -6,10 +6,10 @@ from typing import Optional
 
 import rumps
 
-from .config import Config, set_active_workspace_path
+from .config import Config, set_active_workspace_path, CLIPBOARD_IMAGE_MARKER
 from .workspace import WorkspaceManager, choose_folder_dialog
 from .pipeline import PipelineManager
-from .capture import take_screenshot, grab_clipboard, save_clipboard_image
+from .capture import take_screenshot, grab_clipboard, save_clipboard_image, capture_screen_region
 from .hotkeys import HotkeyManager
 
 
@@ -105,16 +105,25 @@ class DailyStreamApp(rumps.App):
         self._capturing = False  # prevent double-trigger from hotkey + menu click
 
         if self.wm.workspace_dir:
-            self.pm = PipelineManager(self.wm.workspace_dir)
+            self.pm = PipelineManager(
+                self.wm.workspace_dir,
+                screenshot_save_path=self.config.screenshot_save_path,
+            )
 
         self._build_menu()
         self._start_hotkeys()
+        self._register_preset_hotkeys()
         self._update_title()
 
     # --- Menu construction ---
 
     def _build_menu(self) -> None:
         self.menu.clear()
+
+        # Build the screenshot submenu
+        screenshot_menu = rumps.MenuItem("📸 Screenshot")
+        self._populate_screenshot_submenu(screenshot_menu)
+
         self.menu = [
             rumps.MenuItem("Start Workspace", callback=self._on_start_workspace),
             rumps.MenuItem("Open Workspace", callback=self._on_open_workspace),
@@ -124,12 +133,62 @@ class DailyStreamApp(rumps.App):
             None,  # separator
             rumps.MenuItem("Create Pipeline", callback=self._on_create_pipeline),
             None,  # separator
-            rumps.MenuItem("📸 Screenshot", callback=self._on_screenshot_menu),
+            screenshot_menu,
             rumps.MenuItem("📋 Clipboard", callback=self._on_clipboard_menu),
             None,
             rumps.MenuItem("Quit", callback=self._on_quit),
         ]
         self._rebuild_pipeline_menu()
+
+    def _populate_screenshot_submenu(self, parent: rumps.MenuItem) -> None:
+        """Build screenshot submenu items: presets + free selection + management."""
+        # Clear existing items
+        for key in list(parent.keys()):
+            del parent[key]
+
+        presets = self.config.screenshot_presets or []
+
+        # Add each preset as a menu item
+        for i, p in enumerate(presets):
+            name = p.get("name", f"Preset {i + 1}")
+            region = p.get("region", "")
+            hotkey = p.get("hotkey", "")
+            label = f"📐 {name}"
+            if hotkey:
+                label += f"  [{hotkey}]"
+            item = rumps.MenuItem(
+                label,
+                callback=lambda sender, r=region: self._do_screenshot(region=r),
+            )
+            parent.add(item)
+
+        # Separator if there are presets
+        if presets:
+            parent.add(None)
+
+        # Free selection / default mode
+        parent.add(rumps.MenuItem(
+            "✂️ Free Selection",
+            callback=lambda sender: self._do_screenshot(region=None),
+        ))
+
+        parent.add(None)  # separator
+
+        # Preset management
+        parent.add(rumps.MenuItem(
+            "➕ Create Preset...",
+            callback=self._on_create_preset,
+        ))
+        if presets:
+            # Build delete submenu
+            delete_menu = rumps.MenuItem("🗑 Delete Preset")
+            for i, p in enumerate(presets):
+                name = p.get("name", f"Preset {i + 1}")
+                delete_menu.add(rumps.MenuItem(
+                    name,
+                    callback=lambda sender, idx=i: self._on_delete_preset(idx),
+                ))
+            parent.add(delete_menu)
 
     def _rebuild_pipeline_menu(self) -> None:
         """Rebuild pipeline switch submenu."""
@@ -187,7 +246,10 @@ class DailyStreamApp(rumps.App):
             return
 
         self.wm.create(base_path=folder, title=title)
-        self.pm = PipelineManager(self.wm.workspace_dir)
+        self.pm = PipelineManager(
+            self.wm.workspace_dir,
+            screenshot_save_path=self.config.screenshot_save_path,
+        )
         self._rebuild_pipeline_menu()
         self._update_title()
         rumps.notification("DailyStream", "Workspace created", str(self.wm.workspace_dir))
@@ -225,7 +287,10 @@ class DailyStreamApp(rumps.App):
             self.wm.meta.ended_at = None
             self.wm.save_meta()
             set_active_workspace_path(ws_dir)
-            self.pm = PipelineManager(ws_dir)
+            self.pm = PipelineManager(
+                ws_dir,
+                screenshot_save_path=self.config.screenshot_save_path,
+            )
             self._rebuild_pipeline_menu()
             self._update_title()
             title = self.wm.meta.title or ws_dir.name
@@ -273,19 +338,42 @@ class DailyStreamApp(rumps.App):
             rumps.alert("No Workspace", "Start a workspace first.")
             return
 
+        # Step 1: Pipeline name
         win = rumps.Window(
             message="Enter pipeline name:",
-            title="New Pipeline",
+            title="New Pipeline (1/3)",
             default_text="",
-            ok="Create",
+            ok="Next",
             cancel="Cancel",
         )
         resp = _run_window(win)
         if resp.clicked != 1 or not resp.text.strip():
             return
-
         name = resp.text.strip()
-        self.pm.create(name)
+
+        # Step 2: Description (work content)
+        win2 = rumps.Window(
+            message=f"Pipeline: {name}\n\nDescribe the work content (optional):",
+            title="New Pipeline (2/3) — Description",
+            default_text="",
+            ok="Next",
+            cancel="Skip",
+        )
+        resp2 = _run_window(win2)
+        description = resp2.text.strip() if resp2.clicked == 1 else ""
+
+        # Step 3: Goal
+        win3 = rumps.Window(
+            message=f"Pipeline: {name}\n\nWhat is the goal of this pipeline? (optional):",
+            title="New Pipeline (3/3) — Goal",
+            default_text="",
+            ok="Create",
+            cancel="Skip",
+        )
+        resp3 = _run_window(win3)
+        goal = resp3.text.strip() if resp3.clicked == 1 else ""
+
+        self.pm.create(name, description=description, goal=goal)
         self.wm.add_pipeline(name)
 
         # Always activate the newly created pipeline
@@ -301,13 +389,120 @@ class DailyStreamApp(rumps.App):
 
     # --- Capture actions ---
 
-    def _on_screenshot_menu(self, _) -> None:
-        self._do_screenshot()
-
     def _on_clipboard_menu(self, _) -> None:
         self._do_clipboard()
 
-    def _do_screenshot(self) -> None:
+    # -- Preset management --
+
+    def _on_create_preset(self, _) -> None:
+        """Let the user drag-select a screen region and save it as a preset."""
+        rumps.notification(
+            "DailyStream",
+            "Create Screenshot Preset",
+            "Drag to select a region on screen. Press Esc to cancel.",
+        )
+        # Small delay so the notification is visible before the overlay appears
+        import time
+        time.sleep(0.5)
+
+        region = capture_screen_region()
+        if not region:
+            return  # user cancelled
+
+        # Ask for a name
+        win = rumps.Window(
+            message=f"Region captured: {region}\n\nGive this preset a name:",
+            title="Name Your Preset",
+            default_text="",
+            ok="Next",
+            cancel="Cancel",
+        )
+        resp = _run_window(win)
+        if resp.clicked != 1 or not resp.text.strip():
+            return
+
+        name = resp.text.strip()
+
+        # Ask for an optional hotkey
+        win2 = rumps.Window(
+            message=(
+                f"Preset: {name}\n\n"
+                "Assign a global hotkey (optional):\n\n"
+                "Format: <modifier>+<key>\n"
+                "Examples: <cmd>+3, <ctrl>+<shift>+a, <alt>+f1\n\n"
+                "Leave empty to skip."
+            ),
+            title="Hotkey Binding",
+            default_text="",
+            ok="Save",
+            cancel="Skip",
+        )
+        resp2 = _run_window(win2)
+        hotkey = ""
+        if resp2.clicked == 1 and resp2.text.strip():
+            hotkey = resp2.text.strip()
+
+        # Save to config
+        if self.config.screenshot_presets is None:
+            self.config.screenshot_presets = []
+        preset_entry: dict[str, str] = {"name": name, "region": region}
+        if hotkey:
+            preset_entry["hotkey"] = hotkey
+        self.config.screenshot_presets.append(preset_entry)
+        self.config.save()
+
+        # Rebuild screenshot submenu and refresh hotkeys
+        self._refresh_screenshot_submenu()
+        self._register_preset_hotkeys()
+
+        msg = f"'{name}' → {region}"
+        if hotkey:
+            msg += f"  [{hotkey}]"
+        rumps.notification("DailyStream", "Preset saved", msg)
+
+    def _on_delete_preset(self, idx: int) -> None:
+        """Delete a preset by index."""
+        presets = self.config.screenshot_presets or []
+        if 0 <= idx < len(presets):
+            removed = presets.pop(idx)
+            self.config.screenshot_presets = presets if presets else None
+            self.config.save()
+            self._refresh_screenshot_submenu()
+            self._register_preset_hotkeys()
+            rumps.notification("DailyStream", "Preset deleted", removed.get("name", ""))
+
+    def _refresh_screenshot_submenu(self) -> None:
+        """Rebuild the screenshot submenu after preset changes."""
+        screenshot_item = self.menu.get("📸 Screenshot")
+        if screenshot_item:
+            self._populate_screenshot_submenu(screenshot_item)
+
+    def _register_preset_hotkeys(self) -> None:
+        """Register global hotkeys for all presets that have a 'hotkey' field.
+
+        Clears previous preset hotkeys first, so this is safe to call
+        repeatedly (e.g. after creating / deleting a preset).
+        """
+        if not self.hotkey_mgr:
+            return
+
+        self.hotkey_mgr.clear_extras()
+
+        presets = self.config.screenshot_presets or []
+        for i, p in enumerate(presets):
+            hotkey = p.get("hotkey", "")
+            region = p.get("region", "")
+            if hotkey and region:
+                label = f"preset_{i}_{p.get('name', '')}"
+                self.hotkey_mgr.register_extra(
+                    label,
+                    hotkey,
+                    lambda r=region: self._do_screenshot(region=r),
+                )
+
+    # -- Screenshot capture --
+
+    def _do_screenshot(self, region: Optional[str] = None) -> None:
         if self._capturing:
             return  # already in progress, ignore duplicate trigger
         if not self.wm.is_active or not self.wm.get_active_pipeline():
@@ -320,14 +515,19 @@ class DailyStreamApp(rumps.App):
 
         def _capture():
             try:
-                path = take_screenshot(save_dir, mode=self.config.screenshot_mode)
+                path = take_screenshot(
+                    save_dir,
+                    mode=self.config.screenshot_mode,
+                    region=region,
+                )
                 if path is None:
                     return  # user cancelled screencapture
 
                 def _show_dialog():
                     try:
+                        preset_hint = f"  (preset region: {region})" if region else ""
                         win = rumps.Window(
-                            message=f"Screenshot: {path.name}\nAdd a description:",
+                            message=f"Screenshot: {path.name}{preset_hint}\nAdd a description:",
                             title=f"[Screenshot] → {pipeline}",
                             default_text="",
                             ok="Save",
@@ -420,10 +620,15 @@ class DailyStreamApp(rumps.App):
         try:
             from .note_sync import NoteSyncManager
             syncer = NoteSyncManager(self.config, workspace_dir=self.wm.workspace_dir)
+            # Get pipeline meta (description/goal) for first-time heading render
+            pipeline_meta = None
+            if self.pm:
+                pipeline_meta = self.pm.get_pipeline_meta(pipeline_name)
             syncer.sync_entry(
                 workspace_meta=self.wm.meta,
                 pipeline_name=pipeline_name,
                 entry=entry,
+                pipeline_meta=pipeline_meta,
             )
             # Mark the last entry in this pipeline as synced so _sync_all_on_end
             # won't duplicate it.

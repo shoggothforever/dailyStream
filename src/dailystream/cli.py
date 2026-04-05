@@ -58,21 +58,28 @@ def pipeline():
 
 @pipeline.command("create")
 @click.argument("name")
-def pipeline_create(name: str):
+@click.option("--desc", "-d", default="", help="Description of this pipeline's work content.")
+@click.option("--goal", "-g", default="", help="Goal / objective of this pipeline.")
+def pipeline_create(name: str, desc: str, goal: str):
     """Create a new pipeline."""
     wm = WorkspaceManager()
     if not wm.is_active:
         click.echo("⚠️  No active workspace. Run 'dailystream start' first.")
         return
 
-    pm = PipelineManager(wm.workspace_dir)
-    pm.create(name)
+    config = Config.load()
+    pm = PipelineManager(wm.workspace_dir, screenshot_save_path=config.screenshot_save_path)
+    pm.create(name, description=desc, goal=goal)
     wm.add_pipeline(name)
 
     # Always activate the newly created pipeline
     wm.activate_pipeline(name)
 
     click.echo(f"✅ Pipeline '{name}' created and activated.")
+    if desc:
+        click.echo(f"   Description: {desc}")
+    if goal:
+        click.echo(f"   Goal: {goal}")
 
 
 @pipeline.command("list")
@@ -83,7 +90,7 @@ def pipeline_list():
         click.echo("⚠️  No active workspace.")
         return
 
-    pm = PipelineManager(wm.workspace_dir)
+    pm = PipelineManager(wm.workspace_dir)  # no screenshots needed for list
     names = pm.list_pipelines()
     active = wm.get_active_pipeline()
 
@@ -127,16 +134,17 @@ def feed(content: str, desc: str, input_type: str):
         click.echo("⚠️  No active pipeline. Activate one first.")
         return
 
-    pm = PipelineManager(wm.workspace_dir)
+    config = Config.load()
+    pm = PipelineManager(wm.workspace_dir, screenshot_save_path=config.screenshot_save_path)
     entry = pm.add_entry(pipeline_name, input_type, content, desc)
     click.echo(f"✅ Saved to '{pipeline_name}': {desc or content[:50]}")
 
     # Trigger sync
     try:
         from .note_sync import NoteSyncManager
-        config = Config.load()
         syncer = NoteSyncManager(config, workspace_dir=wm.workspace_dir)
-        syncer.sync_entry(wm.meta, pipeline_name, entry)
+        pipeline_meta = pm.get_pipeline_meta(pipeline_name)
+        syncer.sync_entry(wm.meta, pipeline_name, entry, pipeline_meta=pipeline_meta)
     except Exception:
         import traceback
         traceback.print_exc()
@@ -168,3 +176,116 @@ def run_app_cmd():
     """Run the menu bar tray application."""
     from .app import run_app
     run_app()
+
+
+# --- Screenshot preset management ---
+
+@cli.group("preset")
+def preset():
+    """Manage screenshot presets."""
+    pass
+
+
+@preset.command("list")
+def preset_list():
+    """List all screenshot presets."""
+    config = Config.load()
+    presets = config.screenshot_presets or []
+    if not presets:
+        click.echo("No screenshot presets configured.")
+        click.echo("Create one with: dailystream preset create --name 'My Region'")
+        return
+
+    click.echo(f"📐 Screenshot presets ({len(presets)}):\n")
+    for i, p in enumerate(presets, 1):
+        name = p.get("name", f"Preset {i}")
+        region = p.get("region", "?")
+        hotkey = p.get("hotkey", "")
+        hotkey_str = f"  [{hotkey}]" if hotkey else ""
+        click.echo(f"  {i}. {name}  →  {region}{hotkey_str}")
+
+
+@preset.command("create")
+@click.option("--name", "-n", required=True, help="Preset name.")
+@click.option("--region", "-r", default=None, help="Region as 'x,y,w,h'. If omitted, interactive selection.")
+@click.option("--hotkey", "-k", default=None, help="Global hotkey, e.g. '<cmd>+3'. Optional.")
+def preset_create(name: str, region: Optional[str], hotkey: Optional[str]):
+    """Create a new screenshot preset.
+
+    If --region is omitted, opens an interactive overlay for you to
+    drag-select the desired capture area.
+    """
+    config = Config.load()
+
+    if region is None:
+        click.echo("🖱  Drag to select a screen region. Press Esc to cancel...")
+        try:
+            from .capture import capture_screen_region
+            region = capture_screen_region()
+        except Exception as e:
+            click.echo(f"⚠️  Interactive selection failed: {e}")
+            click.echo("   Provide --region 'x,y,w,h' instead.")
+            return
+        if not region:
+            click.echo("Cancelled.")
+            return
+        click.echo(f"   Selected region: {region}")
+
+    # Validate format
+    parts = region.split(",")
+    if len(parts) != 4:
+        click.echo("⚠️  Region must be 'x,y,w,h' (4 comma-separated integers).")
+        return
+    try:
+        [int(p) for p in parts]
+    except ValueError:
+        click.echo("⚠️  Region values must be integers.")
+        return
+
+    if config.screenshot_presets is None:
+        config.screenshot_presets = []
+    preset_entry: dict[str, str] = {"name": name, "region": region}
+    if hotkey:
+        preset_entry["hotkey"] = hotkey
+    config.screenshot_presets.append(preset_entry)
+    config.save()
+    msg = f"✅ Preset '{name}' saved → {region}"
+    if hotkey:
+        msg += f"  [{hotkey}]"
+    click.echo(msg)
+
+
+@preset.command("delete")
+@click.argument("name_or_index")
+def preset_delete(name_or_index: str):
+    """Delete a screenshot preset by name or index (1-based)."""
+    config = Config.load()
+    presets = config.screenshot_presets or []
+    if not presets:
+        click.echo("No presets to delete.")
+        return
+
+    # Try as index first
+    idx = None
+    try:
+        i = int(name_or_index) - 1
+        if 0 <= i < len(presets):
+            idx = i
+    except ValueError:
+        pass
+
+    # Try as name
+    if idx is None:
+        for i, p in enumerate(presets):
+            if p.get("name", "").lower() == name_or_index.lower():
+                idx = i
+                break
+
+    if idx is None:
+        click.echo(f"⚠️  Preset '{name_or_index}' not found. Use 'dailystream preset list' to see all.")
+        return
+
+    removed = presets.pop(idx)
+    config.screenshot_presets = presets if presets else None
+    config.save()
+    click.echo(f"✅ Deleted preset '{removed.get('name', '?')}' ({removed.get('region', '?')})")

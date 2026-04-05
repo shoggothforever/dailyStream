@@ -143,6 +143,62 @@ class TestActiveWorkspaceState:
         assert get_active_workspace_path() is None
 
 
+# ── Screenshot presets in Config ──────────────────────────────────────
+
+class TestScreenshotPresets:
+    def test_presets_default_is_none(self, tmp_config_dir):
+        cfg = Config.load()
+        assert cfg.screenshot_presets is None
+
+    def test_save_and_load_presets(self, tmp_config_dir):
+        cfg = Config.load()
+        cfg.screenshot_presets = [
+            {"name": "Left", "region": "0,0,960,1080"},
+            {"name": "Right", "region": "960,0,960,1080", "hotkey": "<cmd>+4"},
+        ]
+        cfg.save()
+
+        cfg2 = Config.load()
+        assert cfg2.screenshot_presets is not None
+        assert len(cfg2.screenshot_presets) == 2
+        assert cfg2.screenshot_presets[0]["name"] == "Left"
+        assert cfg2.screenshot_presets[1]["hotkey"] == "<cmd>+4"
+
+    def test_save_none_presets(self, tmp_config_dir):
+        """Setting presets to None should persist and reload as None."""
+        cfg = Config.load()
+        cfg.screenshot_presets = [{"name": "Temp", "region": "0,0,1,1"}]
+        cfg.save()
+
+        cfg.screenshot_presets = None
+        cfg.save()
+
+        cfg2 = Config.load()
+        assert cfg2.screenshot_presets is None
+
+    def test_preset_with_all_fields(self, tmp_config_dir):
+        cfg = Config.load()
+        cfg.screenshot_presets = [
+            {"name": "Full", "region": "100,200,800,600", "hotkey": "<cmd>+3"},
+        ]
+        cfg.save()
+
+        cfg2 = Config.load()
+        p = cfg2.screenshot_presets[0]
+        assert p["name"] == "Full"
+        assert p["region"] == "100,200,800,600"
+        assert p["hotkey"] == "<cmd>+3"
+
+    def test_empty_list_presets(self, tmp_config_dir):
+        """An empty list should be preserved as empty list, not None."""
+        cfg = Config.load()
+        cfg.screenshot_presets = []
+        cfg.save()
+
+        cfg2 = Config.load()
+        assert cfg2.screenshot_presets == []
+
+
 # ── Constants ─────────────────────────────────────────────────────────
 
 def test_clipboard_image_marker():
