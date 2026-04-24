@@ -1,18 +1,5 @@
 // swift-tools-version: 5.9
 // DailyStreamMac — native Swift shell for DailyStream.
-//
-// Layout
-// ------
-// * ``DailyStreamCore``     : bridge / RPC types / event stream (UI-free,
-//                              unit-testable on any platform).
-// * ``DailyStreamCoreTests``: XCTest suite for the core library.
-// * (M1.2+) ``DailyStreamMac`` executable will be added as a second
-//   target once menu bar UI work begins.
-//
-// Intentionally no Xcode project file at M1.1 — Swift Package Manager
-// lets us run ``swift build`` / ``swift test`` from the terminal and
-// CI, which is what M0's bundle spike also exercises.  Adding an
-// Xcode project later is additive and non-invasive.
 
 import PackageDescription
 
@@ -26,11 +13,32 @@ let package = Package(
             name: "DailyStreamCore",
             targets: ["DailyStreamCore"]
         ),
+        .executable(
+            name: "DailyStreamMac",
+            targets: ["DailyStreamMac"]
+        ),
+    ],
+    dependencies: [
+        // Global hotkey registration + SwiftUI recorder.
+        // MIT-licensed, maintained by Sindre Sorhus.
+        .package(
+            url: "https://github.com/sindresorhus/KeyboardShortcuts",
+            from: "2.0.0"
+        ),
     ],
     targets: [
         .target(
             name: "DailyStreamCore",
             path: "Sources/DailyStreamCore"
+        ),
+        .executableTarget(
+            name: "DailyStreamMac",
+            dependencies: [
+                "DailyStreamCore",
+                "KeyboardShortcuts",
+            ],
+            path: "Sources/DailyStreamMac",
+            resources: []
         ),
         .testTarget(
             name: "DailyStreamCoreTests",

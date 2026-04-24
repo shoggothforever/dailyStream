@@ -57,7 +57,7 @@ public struct CoreBridgeConfig: Sendable {
 public actor CoreBridge {
     // MARK: - Public state
 
-    public let events: BridgeEventCenter
+    public nonisolated let events: BridgeEventCenter
 
     // MARK: - Private state
 
@@ -320,10 +320,13 @@ public actor CoreBridge {
 
     /// Try a short list of known locations to find `dailystream-core`.
     ///
-    /// 1. Next to the running executable (`.../Contents/Frameworks/Python.framework/Versions/*/bin/dailystream-core`)
-    /// 2. The bundled framework inside the repo during dev (`apps/DailyStreamMac/Frameworks/...`)
-    /// 3. `$DAILYSTREAM_CORE` environment override
-    /// 4. `which dailystream-core`
+    /// 1. `$DAILYSTREAM_CORE` environment override.
+    /// 2. Embedded inside the running bundle
+    ///    (`.../Contents/Frameworks/Python.framework/Versions/*/bin/dailystream-core`).
+    /// 3. Repo-local framework — walks up from the running executable
+    ///    looking for a sibling `Frameworks/Python.framework/...` (works
+    ///    with `swift run` during development).
+    /// 4. `which dailystream-core`.
     public static func locateExecutable() throws -> URL {
         // 1. env override
         if let override = ProcessInfo.processInfo.environment["DAILYSTREAM_CORE"],
@@ -332,25 +335,34 @@ public actor CoreBridge {
             return URL(fileURLWithPath: override)
         }
 
+        let frameworksRelative = "Frameworks/Python.framework/Versions/3.11/bin/dailystream-core"
+
         // 2. embedded inside the running bundle
         if let bundleExecURL = Bundle.main.executableURL {
             let candidates = [
-                // Contents/MacOS/foo → Contents/Frameworks/Python.framework/Versions/3.11/bin/dailystream-core
                 bundleExecURL
                     .deletingLastPathComponent()  // Contents/MacOS
                     .deletingLastPathComponent()  // Contents
-                    .appendingPathComponent("Frameworks/Python.framework/Versions/3.11/bin/dailystream-core"),
+                    .appendingPathComponent(frameworksRelative),
             ]
             for c in candidates where FileManager.default.isExecutableFile(atPath: c.path) {
                 return c
             }
         }
 
-        // 3. repo-local framework (dev mode)
-        let repoLocal = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent("apps/DailyStreamMac/Frameworks/Python.framework/Versions/3.11/bin/dailystream-core")
-        if FileManager.default.isExecutableFile(atPath: repoLocal.path) {
-            return repoLocal
+        // 3. Walk up from the running executable looking for a
+        //    sibling `Frameworks/` directory.  This covers:
+        //    * `swift run` (.build/<triple>/debug/DailyStreamMac)
+        //    * ad-hoc Xcode runs from DerivedData.
+        if let exec = Bundle.main.executableURL {
+            var url = exec.deletingLastPathComponent()
+            for _ in 0..<6 {
+                let candidate = url.appendingPathComponent(frameworksRelative)
+                if FileManager.default.isExecutableFile(atPath: candidate.path) {
+                    return candidate
+                }
+                url.deleteLastPathComponent()
+            }
         }
 
         // 4. PATH lookup via /usr/bin/env
