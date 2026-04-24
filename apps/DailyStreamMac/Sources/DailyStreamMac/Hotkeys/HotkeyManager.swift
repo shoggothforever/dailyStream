@@ -37,7 +37,8 @@ public final class HotkeyManager {
             Task { await state.takeScreenshot(mode: "interactive") }
         }
         KeyboardShortcuts.onKeyDown(for: .clipboardCapture) { [weak state] in
-            state?.showToast(title: "Clipboard capture (WIP)")
+            guard let state else { return }
+            Task { await state.captureClipboard() }
         }
     }
 }

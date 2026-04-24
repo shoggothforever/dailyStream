@@ -426,6 +426,24 @@ def _register_capture_methods(d: Dispatcher, state: _ServerState) -> None:
             raise StateConflict("Screenshot cancelled or failed")
         return {"path": str(path)}
 
+    @d.method("capture.select_region")
+    def _select_region() -> dict:
+        """Open the drag-to-select overlay and return the region string
+        (``"x,y,w,h"``) without taking an actual screenshot.
+
+        This powers the "Create preset" flow where we only want the
+        coordinates.  ``None`` from the underlying PyObjC helper means
+        the user pressed Esc — we surface it as StateConflict so the
+        Swift side can treat it as silent cancel (same code path as
+        screenshot cancel).
+        """
+        from .capture import capture_screen_region
+
+        region = capture_screen_region()
+        if not region:
+            raise StateConflict("Region selection cancelled")
+        return {"region": region}
+
     @d.method("capture.clipboard.grab")
     def _clipboard_grab() -> dict:
         from .capture import grab_clipboard
