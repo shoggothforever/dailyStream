@@ -548,19 +548,20 @@ def _register_timeline_methods(d: Dispatcher, state: _ServerState) -> None:
 
     @d.method("timeline.export_structured")
     def _export_structured() -> dict:
-        """Placeholder for Daily Review (M4). Returns a minimal structure.
-
-        Real implementation will extend timeline.py with
-        ``generate_structured()`` returning full JSON.
+        """Return a structured JSON representation of the workspace
+        timeline for the Swift Daily Review window.
         """
         _require_active_workspace(state)
-        assert state.pm is not None
-        entries = state.pm.get_all_entries()
-        return {
-            "workspace": _meta_to_dict(state),
-            "entries": entries,
-            "generated_by": "rpc_server placeholder v0",
-        }
+        from .timeline import generate_structured
+
+        data = generate_structured(
+            state.wm.workspace_dir, state.wm.meta, config=state.config,
+        )
+        if data is None:
+            return {"workspace": _meta_to_dict(state), "entries": [],
+                    "stats": {}, "pipeline_summaries": [],
+                    "daily_summary": None}
+        return data
 
 
 def _register_ai_methods(d: Dispatcher, state: _ServerState) -> None:

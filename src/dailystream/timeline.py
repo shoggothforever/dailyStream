@@ -229,3 +229,141 @@ def generate_timeline(
     report_path = workspace_dir / "timeline_report.md"
     report_path.write_text("\n".join(lines), encoding="utf-8")
     return report_path
+
+
+def generate_structured(
+    workspace_dir: Path,
+    workspace_meta,
+    config: Optional[Config] = None,
+) -> Optional[dict]:
+    """Generate a structured JSON representation of the workspace timeline.
+
+    This is consumed by the Swift Daily Review window (M4) via the
+    ``timeline.export_structured`` RPC method.  It provides all the data
+    needed for the Hero / StatsStrip / TimelineWaterfall views.
+
+    Returns ``None`` when the workspace has no entries.
+    """
+    from dataclasses import asdict as _asdict
+    from collections import Counter
+
+    pm = PipelineManager(workspace_dir)
+    all_entries = pm.get_all_entries()
+
+    if not all_entries:
+        return None
+
+    ai_mode = getattr(workspace_meta, "ai_mode", "off") or "off"
+
+    # Pre-load AI analyses per pipeline
+    ai_analyses_by_pipeline: dict[str, dict] = {}
+    if ai_mode != "off":
+        for pname in pm.list_pipelines():
+            ai_analyses_by_pipeline[pname] = _load_ai_analyses(
+                workspace_dir, pname
+            )
+
+    # Build per-pipeline entry index order for AI lookup
+    pipeline_entries_order: dict[str, list[str]] = {}
+    for pname in pm.list_pipelines():
+        entries = pm.get_entries(pname)
+        pipeline_entries_order[pname] = [
+            e.get("timestamp", "") for e in entries
+        ]
+
+    def _get_entry_index(pipe: str, ts: str) -> int:
+        order = pipeline_entries_order.get(pipe, [])
+        try:
+            return order.index(ts)
+        except ValueError:
+            return -1
+
+    # Stats
+    ai_categories: dict[str, int] = {}
+    ai_elements_all: list[str] = []
+    type_counts: dict[str, int] = {}
+
+    enriched_entries: list[dict] = []
+    for entry in all_entries:
+        ts = entry.get("timestamp", "")
+        pipe = entry.get("pipeline", "unknown")
+        itype = entry.get("input_type", "?")
+        type_counts[itype] = type_counts.get(itype, 0) + 1
+
+        e: dict = {
+            "timestamp": ts,
+            "pipeline": pipe,
+            "input_type": itype,
+            "description": entry.get("description", ""),
+            "input_content": entry.get("input_content", ""),
+            "ai_description": "",
+            "ai_category": "",
+            "ai_elements": [],
+        }
+
+        if ai_mode != "off":
+            entry_idx = _get_entry_index(pipe, ts)
+            analyses = ai_analyses_by_pipeline.get(pipe, {})
+            analysis = analyses.get(entry_idx)
+            if analysis:
+                e["ai_description"] = analysis.get("description", "")
+                e["ai_category"] = analysis.get("category", "")
+                e["ai_elements"] = analysis.get("key_elements", [])
+                cat = e["ai_category"]
+                if cat:
+                    ai_categories[cat] = ai_categories.get(cat, 0) + 1
+                ai_elements_all.extend(e["ai_elements"])
+
+        enriched_entries.append(e)
+
+    # Pipeline summaries
+    pipeline_summaries: list[dict] = []
+    for pname in pm.list_pipelines():
+        meta = pm.get_pipeline_meta(pname)
+        pcount = sum(1 for e in enriched_entries if e["pipeline"] == pname)
+        ps: dict = {
+            "name": pname,
+            "entry_count": pcount,
+            "description": meta.get("description", ""),
+            "goal": meta.get("goal", ""),
+        }
+        pipeline_summaries.append(ps)
+
+    # Daily summary (daily_report mode)
+    daily_summary = None
+    if ai_mode == "daily_report":
+        summary_data = _load_daily_summary(workspace_dir)
+        if summary_data:
+            daily_summary = {
+                "overall_summary": summary_data.get("overall_summary", ""),
+                "pipeline_summaries": summary_data.get("pipeline_summaries", {}),
+                "generated_at": summary_data.get("generated_at", ""),
+                "model": summary_data.get("model", ""),
+            }
+
+    # Top elements
+    elem_counts = Counter(ai_elements_all).most_common(10)
+
+    return {
+        "workspace": {
+            "workspace_id": getattr(workspace_meta, "workspace_id", ""),
+            "title": getattr(workspace_meta, "title", None)
+                     or getattr(workspace_meta, "workspace_id", ""),
+            "created_at": getattr(workspace_meta, "created_at", ""),
+            "ended_at": getattr(workspace_meta, "ended_at", None),
+            "ai_mode": ai_mode,
+            "pipelines": [p.get("name", "") for p in pipeline_summaries],
+        },
+        "stats": {
+            "total_entries": len(enriched_entries),
+            "type_counts": type_counts,
+            "pipeline_count": len(pipeline_summaries),
+            "ai_categories": ai_categories,
+            "top_elements": [
+                {"name": name, "count": count} for name, count in elem_counts
+            ],
+        },
+        "entries": enriched_entries,
+        "pipeline_summaries": pipeline_summaries,
+        "daily_summary": daily_summary,
+    }

@@ -26,6 +26,9 @@ public struct MenuBarContent: View {
                     pipelineSwitcher
                 }
                 Divider()
+                Button("Daily Review…") {
+                    Task { await state.showDailyReview() }
+                }
                 Button("End Workspace") {
                     Task { await state.endWorkspace() }
                 }

@@ -142,9 +142,13 @@ public final class AppState: ObservableObject {
     }
 
     /// End the current workspace, surfacing the timeline path if any.
+    /// Automatically opens Daily Review on success.
     public func endWorkspace() async {
         struct Result: Decodable { let timeline_report: String? }
         do {
+            // Grab structured data BEFORE ending (workspace is still active).
+            let reviewData = try? await fetchReviewData()
+
             let r: Result = try await bridge.call(
                 "workspace.end", params: RPCEmptyParams()
             )
@@ -154,8 +158,35 @@ public final class AppState: ObservableObject {
             } else {
                 showToast(title: "Workspace ended")
             }
+
+            // Show Daily Review window if we got data.
+            if let data = reviewData {
+                DailyReviewWindow.shared.show(data: data)
+            }
         } catch {
             showToast(title: "End failed", subtitle: "\(error)")
+        }
+    }
+
+    /// Fetch structured timeline data for the Daily Review window.
+    func fetchReviewData() async throws -> ReviewData? {
+        let data: ReviewData = try await bridge.call(
+            "timeline.export_structured", params: RPCEmptyParams()
+        )
+        if data.entries.isEmpty { return nil }
+        return data
+    }
+
+    /// Manually open the Daily Review window for the current workspace.
+    public func showDailyReview() async {
+        do {
+            if let data = try await fetchReviewData() {
+                DailyReviewWindow.shared.show(data: data)
+            } else {
+                showToast(title: "No entries to review")
+            }
+        } catch {
+            showToast(title: "Review unavailable", subtitle: "\(error)")
         }
     }
 
