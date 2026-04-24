@@ -1,4 +1,11 @@
-"""Global hotkey management for DailyStream.
+"""Global hotkey management for DailyStream (**DEPRECATED**).
+
+.. deprecated:: 0.3.0
+    This module is used only by the legacy :mod:`dailystream.app`
+    shell.  The Swift shell registers hotkeys via the
+    `KeyboardShortcuts` library instead and does not import this
+    module.  It will be removed together with :mod:`dailystream.app`
+    in 0.5.
 
 Uses macOS native CGEventTap instead of pynput to avoid SIGTRAP crashes
 caused by HIToolbox's dispatch_assert_queue when the input method switches

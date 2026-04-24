@@ -4,11 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dailystream"
-version = "0.1.0"
+version = "0.3.0"
 description = "A minimal daily recording stream system for macOS"
 requires-python = ">=3.11"
+# Core runtime dependencies — no GUI toolkits here.
+# The Swift UI shell talks to the Python core via JSON-RPC (rpc_server),
+# so the default install is GUI-free and safe to bundle.
 dependencies = [
-    "rumps>=0.4.0",
     "click>=8.1",
     "pyobjc-framework-Quartz>=10.0",
 ]
@@ -22,9 +24,17 @@ ai = [
     "anthropic>=0.30",
     "Pillow>=10.0",
 ]
+# Legacy rumps-based menu-bar app (deprecated; will be removed in 0.5).
+# Install only if you rely on `dailystream app`; the replacement is
+# the Swift DailyStream.app bundle (see apps/DailyStreamMac/).
+legacy = [
+    "rumps>=0.4.0",
+]
 
 [project.scripts]
 dailystream = "dailystream.cli:cli"
+# New RPC entry point consumed by the Swift shell.
+dailystream-core = "dailystream.rpc_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dailystream"]

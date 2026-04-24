@@ -1,10 +1,41 @@
-"""DailyStream menu bar tray application."""
+"""DailyStream menu bar tray application (**DEPRECATED**).
+
+.. deprecated:: 0.3.0
+    The rumps/PyObjC menu-bar UI is being replaced by a native Swift
+    app at ``apps/DailyStreamMac/``.  This module is kept so that
+    existing users can still run ``dailystream app`` during the
+    migration window but will be removed in 0.5.
+
+    Functional UI work should target the Swift shell via the JSON-RPC
+    server in :mod:`dailystream.rpc_server`.
+
+    When ``rumps`` is not installed (it moved to the ``legacy``
+    extras group in 0.3) the module can still be imported, but
+    instantiating :class:`DailyStreamApp` will raise a clear
+    :class:`ImportError`.
+"""
 
 import threading
+import warnings
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
-import rumps
+# One-shot deprecation warning emitted on *import* so legacy CLI users see it.
+warnings.warn(
+    "dailystream.app (rumps menu-bar shell) is deprecated and will be "
+    "removed in 0.5. Use the Swift DailyStream.app (apps/DailyStreamMac/) "
+    "or the CLI (`dailystream ...`) instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+try:
+    import rumps  # type: ignore[import-not-found]
+except ImportError as _rumps_err:  # pragma: no cover - import-time only
+    rumps = None  # type: ignore[assignment]
+    _RUMPS_IMPORT_ERROR: Optional[ImportError] = _rumps_err
+else:
+    _RUMPS_IMPORT_ERROR = None
 
 from .config import Config, set_active_workspace_path, CLIPBOARD_IMAGE_MARKER
 from .workspace import WorkspaceManager, choose_folder_dialog

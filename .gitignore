@@ -25,3 +25,15 @@ nohup.out
 
 # CodeBuddy internal data
 .codebuddy/
+
+# Swift / Xcode
+apps/DailyStreamMac/Frameworks/
+.bundle-cache/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+DerivedData/
+build/Debug-*/
+build/Release-*/
+*.dmg
+*.app.zip

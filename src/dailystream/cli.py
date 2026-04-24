@@ -281,7 +281,33 @@ def analyze(force: bool):
 
 @cli.command("app")
 def run_app_cmd():
-    """Run the menu bar tray application."""
+    """Run the menu bar tray application.
+
+    .. deprecated:: 0.3.0
+        The rumps-based menu bar app is deprecated in favour of the
+        native Swift app under ``apps/DailyStreamMac/``.  This command
+        still works when the ``legacy`` extras are installed
+        (``pip install 'dailystream[legacy]'``) but will be removed
+        in a future release.
+    """
+    try:
+        import rumps  # noqa: F401 — just a probe
+    except ImportError:
+        click.echo(
+            "⚠️  The rumps menu-bar shell is deprecated and no longer "
+            "installed by default.\n"
+            "   Install the legacy extras if you still need it:\n"
+            "     pip install 'dailystream[legacy]'\n"
+            "   Or switch to the native Swift app: apps/DailyStreamMac/\n"
+            "   Or use the CLI: `dailystream --help`.",
+            err=True,
+        )
+        raise SystemExit(1)
+    click.echo(
+        "ℹ️  Note: `dailystream app` is deprecated and will be removed "
+        "in 0.5.  Use the native DailyStream.app instead.",
+        err=True,
+    )
     from .app import run_app
     run_app()
 
