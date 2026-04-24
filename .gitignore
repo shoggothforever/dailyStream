@@ -28,6 +28,10 @@ nohup.out
 
 # Swift / Xcode
 apps/DailyStreamMac/Frameworks/
+apps/DailyStreamMac/.build/
+apps/DailyStreamMac/.swiftpm/
+# Auto-generated trampoline used only by Swift integration tests
+apps/DailyStreamMac/Tests/DailyStreamCoreTests/run_rpc_server.sh
 .bundle-cache/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
