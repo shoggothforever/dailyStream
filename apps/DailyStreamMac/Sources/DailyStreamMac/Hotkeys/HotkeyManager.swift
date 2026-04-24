@@ -105,7 +105,7 @@ private func parseHotkey(_ str: String) -> ParsedHotkey? {
 // MARK: - PresetHotkeyTap -----------------------------------------------
 
 /// Manages a CGEventTap on a background thread, dispatching matched
-/// keyDown / keyUp events to registered callbacks.
+/// keyDown events to registered callbacks.
 ///
 /// Thread-safety: `bindings` is protected by `lock`.  The event-tap
 /// callback reads under the lock; mutations happen on the main thread
@@ -116,9 +116,6 @@ private final class PresetHotkeyTap {
         let modeID: String
         let presetID: String
         let presetName: String
-        /// When `true` the caller also receives a `keyUp` callback —
-        /// used by the "Hold To Repeat" strategy on the Swift side.
-        let wantsKeyUp: Bool
     }
 
     private var bindings: [Binding] = []
@@ -132,8 +129,8 @@ private final class PresetHotkeyTap {
     private var thread: Thread?
     private var bgRunLoop: CFRunLoop?
 
-    // Track which bindings are currently held down so we can emit a
-    // single `keyUp` even when macOS delivers multiple.
+    // Track which bindings are currently held down so we can suppress
+    // macOS's auto-repeat keyDowns.
     private var heldBindings: Set<String> = []
 
     // MARK: Binding management
@@ -220,35 +217,24 @@ private final class PresetHotkeyTap {
         }
         lock.unlock()
 
-        guard let match else { return }
+        guard let match, type == .keyDown else { return }
+
+        // macOS emits auto-repeat keyDowns while the user is holding
+        // the key.  Suppress repeats so a single press fires exactly
+        // one capture.
+        if wasHeld { return }
 
         // Dispatch onto the MainActor so we can safely call AppState.
         let modeID = match.modeID
         let presetID = match.presetID
         let presetName = match.presetName
-        let wantsUp = match.wantsKeyUp
-
-        if type == .keyDown {
-            // macOS emits auto-repeat keyDowns; suppress them here to
-            // avoid firing a second "start" while the user is still
-            // holding the key.
-            if wasHeld && !wantsUp { return }
-            Task { @MainActor [weak state] in
-                guard let state else { return }
-                await state.onPresetHotkeyDown(
-                    modeID: modeID,
-                    presetID: presetID,
-                    presetName: presetName
-                )
-            }
-        } else if type == .keyUp, wantsUp {
-            Task { @MainActor [weak state] in
-                guard let state else { return }
-                await state.onPresetHotkeyUp(
-                    modeID: modeID,
-                    presetID: presetID
-                )
-            }
+        Task { @MainActor [weak state] in
+            guard let state else { return }
+            await state.onPresetHotkeyDown(
+                modeID: modeID,
+                presetID: presetID,
+                presetName: presetName
+            )
         }
     }
 }
@@ -327,13 +313,11 @@ public final class HotkeyManager {
         for preset in presets {
             guard let hotkeyStr = preset.hotkey, !hotkeyStr.isEmpty,
                   let parsed = parseHotkey(hotkeyStr) else { continue }
-            let wantsUp = preset.attachments.contains { $0.id == "hold_to_repeat" }
             bindings.append(.init(
                 parsed: parsed,
                 modeID: modeID,
                 presetID: preset.id,
-                presetName: preset.name,
-                wantsKeyUp: wantsUp
+                presetName: preset.name
             ))
         }
         presetTap.updateBindings(bindings)

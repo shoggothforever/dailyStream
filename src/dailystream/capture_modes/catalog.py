@@ -129,17 +129,6 @@ _register(AttachmentSpec(
     },
 ))
 
-_register(AttachmentSpec(
-    id="hold_to_repeat",
-    kind=AttachmentKind.STRATEGY,
-    label="Hold To Repeat",
-    description="Keep capturing while the hotkey is held down.",
-    icon="hand.tap",
-    params_schema={
-        "interval_ms": ParamSpec(kind="int", default=250, help="Milliseconds between frames", min=100, max=2000),
-    },
-))
-
 
 # -- FEEDBACK (multi-choice) -----------------------------------------------
 
@@ -185,23 +174,15 @@ _register(AttachmentSpec(
     id="hide_cursor",
     kind=AttachmentKind.WINDOW_CTRL,
     label="Hide Cursor",
-    description="Hide the mouse pointer during capture.",
+    description="Do not include the mouse pointer in the captured image.",
     icon="cursorarrow.slash",
-))
-
-_register(AttachmentSpec(
-    id="bring_to_front",
-    kind=AttachmentKind.WINDOW_CTRL,
-    label="Bring Frontmost App Up",
-    description="Activate the app under the pointer before capturing.",
-    icon="macwindow.on.rectangle",
 ))
 
 _register(AttachmentSpec(
     id="hide_dock",
     kind=AttachmentKind.WINDOW_CTRL,
     label="Hide Dock",
-    description="Temporarily hide the Dock to keep it out of the frame.",
+    description="Enable Dock auto-hide during capture (restored afterwards).",
     icon="dock.rectangle",
 ))
 
@@ -247,17 +228,64 @@ _register(AttachmentSpec(
 ))
 
 _register(AttachmentSpec(
-    id="open_in_editor",
+    id="ai_analyze",
     kind=AttachmentKind.POST,
-    label="Open In Editor",
-    description="Open the saved file in your external editor (Preview by default).",
-    icon="square.and.pencil",
+    label="AI Analyze",
+    description=(
+        "Send the frame to the configured Claude model and optionally "
+        "prefill the description HUD with the result."
+    ),
+    icon="sparkles",
     params_schema={
-        "editor": ParamSpec(
-            kind="enum",
-            default="default",
-            help="Which editor to launch",
-            enum_values=("default", "preview", "vscode"),
+        "user_hint": ParamSpec(
+            kind="string",
+            default="Describe what the user is working on.",
+            help="Extra instruction sent to the model as a user hint",
+        ),
+        "prefill_hud": ParamSpec(
+            kind="bool",
+            default=True,
+            help="Prefill the Screenshot HUD description with the AI output",
+        ),
+        "save_to_analysis": ParamSpec(
+            kind="bool",
+            default=True,
+            help="Persist the result into ai_analyses.json for the pipeline",
+        ),
+        "wait": ParamSpec(
+            kind="bool",
+            default=True,
+            help="Wait for the analysis before capturing the next frame",
+        ),
+    },
+))
+
+_register(AttachmentSpec(
+    id="run_command",
+    kind=AttachmentKind.POST,
+    label="Run Command",
+    description=(
+        "Run a custom shell command / script after each frame.  "
+        "Receives context via environment variables "
+        "(DAILYSTREAM_FRAME_PATH, DAILYSTREAM_OCR_TEXT, …)."
+    ),
+    icon="terminal",
+    params_schema={
+        "command": ParamSpec(
+            kind="file_or_command",
+            default="",
+            help="Path to an executable script (use Browse) or an inline shell command",
+        ),
+        "wait": ParamSpec(
+            kind="bool",
+            default=False,
+            help="When true, block the pipeline until the command finishes",
+        ),
+        "timeout_seconds": ParamSpec(
+            kind="int",
+            default=30,
+            help="Kill the command if it runs longer than this",
+            min=1, max=600,
         ),
     },
 ))

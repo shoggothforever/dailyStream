@@ -168,6 +168,7 @@ def take_screenshot(
     save_dir: Path,
     mode: str = "interactive",
     region: Optional[str] = None,
+    no_cursor: bool = False,
 ) -> Optional[Path]:
     """Call macOS screencapture to capture screenshot.
 
@@ -177,6 +178,9 @@ def take_screenshot(
         region: Optional region string "x,y,w,h" for preset capture area.
                 When provided, ``screencapture -R x,y,w,h`` is used instead
                 of interactive or fullscreen mode.
+        no_cursor: When True, add ``-C`` so the mouse pointer is omitted
+                from the captured image (matches the system
+                ``hide_cursor`` attachment).
 
     Saves to save_dir with a timestamped filename.
     Returns the screenshot path, or None if user cancelled.
@@ -185,23 +189,25 @@ def take_screenshot(
     filename = f"screenshot_{now_filename()}.png"
     save_path = save_dir / filename
 
+    cursor_flags = ["-C"] if no_cursor else []
+
     try:
         if region:
             # Preset region capture: -R x,y,w,h
             result = subprocess.run(
-                ["screencapture", "-R", region, str(save_path)],
+                ["screencapture", *cursor_flags, "-R", region, str(save_path)],
                 timeout=10,
             )
         elif mode == "fullscreen":
             # Capture entire screen without user interaction
             result = subprocess.run(
-                ["screencapture", str(save_path)],
+                ["screencapture", *cursor_flags, str(save_path)],
                 timeout=10,
             )
         else:
             # Interactive mode: user selects region
             result = subprocess.run(
-                ["screencapture", "-i", str(save_path)],
+                ["screencapture", *cursor_flags, "-i", str(save_path)],
                 timeout=120,  # generous timeout for user interaction
             )
     except subprocess.TimeoutExpired:

@@ -30,13 +30,17 @@ accidentally.
   * `single` — one frame
   * `burst` — N frames at a fixed interval
   * `interval` — every N seconds until stopped
-  * `hold_to_repeat` — capture while the hotkey is held down
 * **FEEDBACK** *(multi)* — how the user is told a shot happened:
   * `silent_save`, `flash_menubar`, `sound`, `notification`
 * **WINDOW_CTRL** *(multi)* — scene setup before the shot:
-  * `hide_cursor`, `bring_to_front`, `hide_dock`
+  * `hide_cursor` — omit the mouse pointer from the image (passes `-C` to `screencapture`)
+  * `hide_dock` — toggle Dock auto-hide via AppleScript; restored after the shot
 * **POST** *(multi, ordered)* — post-processing per frame:
-  * `auto_ocr`, `quick_tags`, `auto_copy_clipboard`, `open_in_editor`
+  * `auto_ocr` — Vision framework text recognition, result written to `post_artifacts.ocr_text`
+  * `quick_tags` — transient keypress-to-tag HUD
+  * `auto_copy_clipboard` — copy the frame to the system clipboard
+  * `ai_analyze` — send the frame to Claude and optionally prefill the HUD description
+  * `run_command` — user-defined shell command / script; context is passed via `DAILYSTREAM_*` env vars
 * **DELIVERY** *(pick one)* — where the frame goes:
   * `current_pipeline` (default)
 

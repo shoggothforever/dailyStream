@@ -715,6 +715,17 @@ public final class AppState: ObservableObject {
                 if let rep = try? evt.params?.decode(as: ExecutionReportDTO.self) {
                     await handlePresetExecuted(report: rep)
                 }
+            case "capture.hook_failed":
+                if let info = try? evt.params?.decode(as: HookFailedDTO.self) {
+                    let kind = info.kind ?? "hook"
+                    let msg = info.error
+                        ?? info.stderr
+                        ?? "exit code \(info.returncode.map(String.init) ?? "?")"
+                    showToast(
+                        title: "⚠️ \(kind) failed",
+                        subtitle: String(msg.prefix(120))
+                    )
+                }
             case "capture.quick_tags_prompt":
                 // Reserved for an inline tag HUD.  The payload is
                 // already defined on the Python side; render it once
@@ -821,6 +832,14 @@ private struct NotificationDTO: Decodable {
 
 private struct SoundDTO: Decodable {
     let volume: Double?
+}
+
+private struct HookFailedDTO: Decodable {
+    let kind: String?
+    let command: String?
+    let error: String?
+    let stderr: String?
+    let returncode: Int?
 }
 
 private struct FrameDTO: Decodable {
@@ -962,15 +981,6 @@ extension AppState {
         await executePreset(preset, modeID: modeID, fromHotkey: true)
     }
 
-    /// Called by HotkeyManager on keyUp, only for presets with
-    /// ``hold_to_repeat`` strategy.
-    public func onPresetHotkeyUp(modeID: String, presetID: String) async {
-        let key = "\(modeID)/\(presetID)"
-        if runningIntervals.contains(key) {
-            await stopInterval(modeID: modeID, presetID: presetID)
-        }
-    }
-
     /// Central dispatcher used by hotkeys + Designer "Test" button.
     public func executePreset(_ preset: CapturePreset,
                               modeID: String,
@@ -996,16 +1006,6 @@ extension AppState {
             } else {
                 await startInterval(modeID: modeID, preset: preset)
             }
-            return
-        }
-
-        if strategyID == "hold_to_repeat" {
-            // Translate hold-to-repeat into a transient interval — the
-            // Python side keeps firing until we call stop_interval on
-            // keyUp.
-            let key = "\(modeID)/\(preset.id)"
-            if runningIntervals.contains(key) { return }
-            await startInterval(modeID: modeID, preset: preset)
             return
         }
 
@@ -1091,16 +1091,36 @@ extension AppState {
         }
 
         // Non-silent single shot: open the description HUD for each
-        // captured frame in sequence (usually 1).
+        // captured frame in sequence (usually 1).  When the Preset
+        // includes ``ai_analyze`` or ``auto_ocr`` we pre-fill the
+        // description so the user just has to tweak or ⏎ to save.
         for frame in report.frames {
             guard let p = frame.path, !frame.skipped else { continue }
             let fileURL = URL(fileURLWithPath: p)
+            // AI description wins over raw OCR because it's already a
+            // sentence; fall back to OCR if AI isn't available.
+            let aiText = frame.post_artifacts?["ai_description"]?.stringValue ?? ""
+            let ocrText = frame.post_artifacts?["ocr_text"]?.stringValue ?? ""
+            let prefill: String
+            let source: String?
+            if !aiText.isEmpty {
+                prefill = aiText
+                source = "AI"
+            } else if !ocrText.isEmpty {
+                prefill = ocrText
+                source = "OCR"
+            } else {
+                prefill = ""
+                source = nil
+            }
             let result: ScreenshotDescResult? = await HUDHost.shared.present { close in
                 ScreenshotDescView(
                     filename: fileURL.lastPathComponent,
                     pipeline: pipeline,
                     presetName: report.preset_name,
                     thumbnailURL: fileURL,
+                    initialText: prefill,
+                    initialTextSource: source,
                     onClose: close
                 )
             }

@@ -9,6 +9,9 @@
 //   the file from disk (mirrors `path.unlink(missing_ok=True)` in app.py
 //   line 624).
 // * Empty description + Save is allowed (desc=="").
+// * When ``initialText`` is non-empty (e.g. pre-filled by the
+//   ``auto_ocr`` Attachment) the hint bar shows a small badge so the
+//   user knows the content is suggested and fully editable.
 
 import SwiftUI
 import AppKit
@@ -23,10 +26,36 @@ struct ScreenshotDescView: View {
     let pipeline: String
     let presetName: String?       // non-nil when triggered by a preset
     let thumbnailURL: URL?
+    /// Pre-filled description; typically the OCR text for Presets that
+    /// include the ``auto_ocr`` Attachment.  ``""`` means "no suggestion".
+    let initialText: String
+    /// Hint shown next to the text field when ``initialText`` is
+    /// present (e.g. "from OCR"), giving the user context about where
+    /// the suggestion came from.
+    let initialTextSource: String?
 
     let onClose: (ScreenshotDescResult) -> Void
 
-    @State private var text: String = ""
+    @State private var text: String
+
+    init(
+        filename: String,
+        pipeline: String,
+        presetName: String?,
+        thumbnailURL: URL?,
+        initialText: String = "",
+        initialTextSource: String? = nil,
+        onClose: @escaping (ScreenshotDescResult) -> Void
+    ) {
+        self.filename = filename
+        self.pipeline = pipeline
+        self.presetName = presetName
+        self.thumbnailURL = thumbnailURL
+        self.initialText = initialText
+        self.initialTextSource = initialTextSource
+        self.onClose = onClose
+        _text = State(initialValue: initialText)
+    }
 
     var body: some View {
         HUDFrame {
@@ -51,7 +80,7 @@ struct ScreenshotDescView: View {
                 Divider().opacity(0.3)
 
                 HUDHintBar(
-                    left: presetName.map { "preset · \($0)" },
+                    left: hintLeft,
                     right: "⎋ Discard  ⇧↩ Newline  ↩ Save"
                 )
             }
@@ -76,6 +105,15 @@ struct ScreenshotDescView: View {
             }
             Spacer()
         }
+    }
+
+    private var hintLeft: String? {
+        var parts: [String] = []
+        if let presetName { parts.append("preset · \(presetName)") }
+        if !initialText.isEmpty {
+            parts.append("✨ prefilled · \(initialTextSource ?? "suggestion")")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
     }
 
     private func submit() {

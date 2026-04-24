@@ -237,7 +237,8 @@ class _StubWM:
 @pytest.fixture()
 def stub_capture(monkeypatch, tmp_path):
     """Replace capture.take_screenshot / save_clipboard_image with fakes."""
-    def _fake_screenshot(save_dir, mode="interactive", region=None):
+    def _fake_screenshot(save_dir, mode="interactive", region=None,
+                         no_cursor=False):
         p = save_dir / "fake.png"
         save_dir.mkdir(parents=True, exist_ok=True)
         p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
@@ -312,3 +313,92 @@ class TestExecutor:
         )
         report = CaptureExecutor().execute(preset, ctx)
         assert report.frames[0].skipped is True
+
+    def test_run_command_success(self, stub_capture, tmp_path):
+        events = []
+        ctx = ExecutionContext(
+            wm=_StubWM(),
+            pm=_StubPM(stub_capture),
+            publish_event=lambda m, p: events.append((m, p)),
+            mode_id="default",
+            preset_name="HookTest",
+        )
+        marker = tmp_path / "marker.txt"
+        # Inline shell writing frame path + preset name into a marker file
+        cmd = (
+            f"echo \"$DAILYSTREAM_PRESET_NAME:$DAILYSTREAM_FRAME_PATH\" "
+            f"> {marker}"
+        )
+        preset = Preset(
+            id="p", name="HookTest",
+            source=Source(kind=SourceKind.FULLSCREEN),
+            attachments=[
+                Attachment(id="single"),
+                Attachment(id="run_command",
+                           params={"command": cmd, "wait": True,
+                                   "timeout_seconds": 5}),
+            ],
+        )
+        CaptureExecutor().execute(preset, ctx)
+        assert marker.exists()
+        contents = marker.read_text(encoding="utf-8")
+        assert "HookTest:" in contents
+        assert str(stub_capture) in contents
+        # No hook_failed event
+        assert not any(e[0] == "capture.hook_failed" for e in events)
+
+    def test_run_command_failure_emits_event(self, stub_capture):
+        events = []
+        ctx = ExecutionContext(
+            wm=_StubWM(),
+            pm=_StubPM(stub_capture),
+            publish_event=lambda m, p: events.append((m, p)),
+            mode_id="default",
+        )
+        preset = Preset(
+            id="p", name="Bad",
+            source=Source(kind=SourceKind.FULLSCREEN),
+            attachments=[
+                Attachment(id="single"),
+                Attachment(id="run_command",
+                           params={"command": "exit 7", "wait": True,
+                                   "timeout_seconds": 5}),
+            ],
+        )
+        CaptureExecutor().execute(preset, ctx)
+        failures = [p for m, p in events if m == "capture.hook_failed"]
+        assert len(failures) == 1
+        assert failures[0]["returncode"] == 7
+
+    def test_hide_cursor_passes_no_cursor_flag(self, stub_capture,
+                                               monkeypatch):
+        """hide_cursor attachment must forward no_cursor=True to screencapture."""
+        seen: dict = {}
+
+        def _spy(save_dir, mode="interactive", region=None,
+                 no_cursor=False):
+            seen["no_cursor"] = no_cursor
+            seen["mode"] = mode
+            p = save_dir / "fake.png"
+            save_dir.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+            return p
+
+        monkeypatch.setattr("dailystream.capture.take_screenshot", _spy)
+
+        ctx = ExecutionContext(
+            wm=_StubWM(),
+            pm=_StubPM(stub_capture),
+            publish_event=lambda m, p: None,
+            mode_id="default",
+        )
+        preset = Preset(
+            id="p", name="P",
+            source=Source(kind=SourceKind.FULLSCREEN),
+            attachments=[
+                Attachment(id="single"),
+                Attachment(id="hide_cursor"),
+            ],
+        )
+        CaptureExecutor().execute(preset, ctx)
+        assert seen.get("no_cursor") is True

@@ -279,54 +279,53 @@ struct CapturePresetEditorView: View {
             state.attachmentCatalog.first { $0.id == a.id }?.kind == kind
         })?.id
 
-        HStack(spacing: 8) {
+        FlowHStack(spacing: 8) {
             ForEach(catalog) { entry in
-                Button {
-                    setSingleChoice(kind: kind, entry: entry)
-                } label: {
-                    Label(entry.label, systemImage: entry.icon)
-                        .font(.system(size: 12))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(currentID == entry.id
-                                      ? Color.accentColor.opacity(0.2)
-                                      : Color.clear)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(currentID == entry.id
-                                        ? Color.accentColor
-                                        : Color.secondary.opacity(0.3),
-                                        lineWidth: 1)
-                        )
-                }
-                .buttonStyle(.plain)
-                .help(entry.description)
-            }
-            Spacer()
-        }
+                HStack(spacing: 4) {
+                    Button {
+                        setSingleChoice(kind: kind, entry: entry)
+                    } label: {
+                        Label(entry.label, systemImage: entry.icon)
+                            .font(.system(size: 12))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(currentID == entry.id
+                                          ? Color.accentColor.opacity(0.2)
+                                          : Color.clear)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(currentID == entry.id
+                                            ? Color.accentColor
+                                            : Color.secondary.opacity(0.3),
+                                            lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help(entry.description)
 
-        // Parameter form for the currently-selected single-choice entry.
-        if let currentID,
-           let entry = catalog.first(where: { $0.id == currentID }),
-           !entry.paramsSchema.isEmpty {
-            AttachmentParamsForm(
-                entry: entry,
-                params: bindingForAttachmentParams(id: currentID)
-            )
-            .padding(.top, 4)
+                    // Pop-out params editor (only when selected AND
+                    // the attachment exposes any params).
+                    if currentID == entry.id, !entry.paramsSchema.isEmpty {
+                        AttachmentParamsPopoverButton(
+                            entry: entry,
+                            params: bindingForAttachmentParams(id: entry.id)
+                        )
+                    }
+                }
+            }
         }
     }
 
     @ViewBuilder
     private func multiChoiceGrid(kind: AttachmentKind,
                                  catalog: [AttachmentCatalogEntry]) -> some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 6)],
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 6)],
                   alignment: .leading, spacing: 6) {
             ForEach(catalog) { entry in
-                VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
                     Toggle(isOn: Binding(
                         get: { containsAttachment(id: entry.id) },
                         set: { toggleMultiChoice(entry: entry, enabled: $0) }
@@ -337,13 +336,14 @@ struct CapturePresetEditorView: View {
                     .toggleStyle(.checkbox)
                     .help(entry.description)
 
+                    Spacer(minLength: 2)
+
                     if containsAttachment(id: entry.id),
                        !entry.paramsSchema.isEmpty {
-                        AttachmentParamsForm(
+                        AttachmentParamsPopoverButton(
                             entry: entry,
                             params: bindingForAttachmentParams(id: entry.id)
                         )
-                        .padding(.leading, 22)
                     }
                 }
             }
@@ -498,6 +498,112 @@ enum HotkeyString {
 }
 
 
+// MARK: - Attachment params popover -----------------------------------
+
+/// Small "sliders" button that opens a popover with the full
+/// parameter editor for an Attachment.  Keeps the main grid compact
+/// while giving every parameter room to breathe.
+struct AttachmentParamsPopoverButton: View {
+    let entry: AttachmentCatalogEntry
+    @Binding var params: [String: JSONValue]
+    @State private var open: Bool = false
+
+    var body: some View {
+        Button {
+            open.toggle()
+        } label: {
+            Image(systemName: "slider.horizontal.3")
+                .font(.system(size: 11))
+                .padding(4)
+                .background(
+                    Circle().fill(Color.secondary.opacity(0.12))
+                )
+        }
+        .buttonStyle(.plain)
+        .help("Edit \(entry.label) parameters")
+        .popover(isPresented: $open, arrowEdge: .trailing) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 6) {
+                    Image(systemName: entry.icon)
+                    Text(entry.label)
+                        .font(.system(size: 14, weight: .semibold))
+                }
+                if !entry.description.isEmpty {
+                    Text(entry.description)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Divider()
+                AttachmentParamsForm(entry: entry, params: $params)
+                HStack {
+                    Spacer()
+                    Button("Done") { open = false }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(16)
+            .frame(width: 360)
+        }
+    }
+}
+
+
+// MARK: - FlowHStack ---------------------------------------------------
+
+/// Horizontal stack that wraps to a new row when the children exceed
+/// the available width.  Used for strategy buttons so the single-choice
+/// row never overflows the 440-pt editor column.
+struct FlowHStack: Layout {
+    var spacing: CGFloat = 8
+    var lineSpacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews,
+                      cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var totalHeight: CGFloat = 0
+        var totalWidth: CGFloat = 0
+
+        for sub in subviews {
+            let size = sub.sizeThatFits(.unspecified)
+            if x + size.width > maxWidth && x > 0 {
+                y += rowHeight + lineSpacing
+                x = 0
+                rowHeight = 0
+            }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+            totalWidth = max(totalWidth, x)
+            totalHeight = y + rowHeight
+        }
+        return CGSize(width: maxWidth.isFinite ? maxWidth : totalWidth,
+                      height: totalHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize,
+                       subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+
+        for sub in subviews {
+            let size = sub.sizeThatFits(.unspecified)
+            if x + size.width > bounds.maxX && x > bounds.minX {
+                x = bounds.minX
+                y += rowHeight + lineSpacing
+                rowHeight = 0
+            }
+            sub.place(at: CGPoint(x: x, y: y), proposal: .unspecified)
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+    }
+}
+
+
 // MARK: - Attachment params form ----------------------------------------
 
 /// Renders the parameter editor for one Attachment based on its
@@ -508,7 +614,7 @@ struct AttachmentParamsForm: View {
     @Binding var params: [String: JSONValue]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
             ForEach(entry.paramsSchema.sorted(by: { $0.key < $1.key }),
                     id: \.key) { key, spec in
                 paramRow(name: key, spec: spec)
@@ -518,30 +624,33 @@ struct AttachmentParamsForm: View {
 
     @ViewBuilder
     private func paramRow(name: String, spec: AttachmentParamSchema) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        VStack(alignment: .leading, spacing: 3) {
             Text(name)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .frame(width: 90, alignment: .trailing)
+                .font(.system(size: 12, weight: .medium))
             switch spec.kind {
             case "int":
                 TextField("", value: Binding(
                     get: { params[name]?.intValue ?? (spec.defaultValue?.intValue ?? 0) },
                     set: { params[name] = .int($0) }
                 ), formatter: NumberFormatter())
-                .frame(maxWidth: 100)
+                .textFieldStyle(.roundedBorder)
             case "float":
                 TextField("", value: Binding(
                     get: { params[name]?.doubleValue ?? (spec.defaultValue?.doubleValue ?? 0.0) },
                     set: { params[name] = .double($0) }
                 ), formatter: NumberFormatter())
-                .frame(maxWidth: 100)
+                .textFieldStyle(.roundedBorder)
             case "bool":
-                Toggle("", isOn: Binding(
+                Toggle(isOn: Binding(
                     get: { params[name]?.boolValue ?? (spec.defaultValue?.boolValue ?? false) },
                     set: { params[name] = .bool($0) }
-                ))
-                .labelsHidden()
+                )) {
+                    Text(spec.help ?? "")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
             case "enum":
                 Picker("", selection: Binding(
                     get: { params[name]?.stringValue ?? (spec.defaultValue?.stringValue ?? "") },
@@ -552,21 +661,58 @@ struct AttachmentParamsForm: View {
                     }
                 }
                 .labelsHidden()
-                .frame(maxWidth: 160)
+            case "file_or_command":
+                HStack(spacing: 6) {
+                    TextField(
+                        "script path or inline shell command",
+                        text: Binding(
+                            get: { params[name]?.stringValue
+                                   ?? (spec.defaultValue?.stringValue ?? "") },
+                            set: { params[name] = .string($0) }
+                        )
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+
+                    Button {
+                        pickFile(for: name)
+                    } label: {
+                        Label("Browse…", systemImage: "folder")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .controlSize(.small)
+                }
             default:
                 TextField("", text: Binding(
                     get: { params[name]?.stringValue ?? (spec.defaultValue?.stringValue ?? "") },
                     set: { params[name] = .string($0) }
                 ))
+                .textFieldStyle(.roundedBorder)
             }
 
-            if let help = spec.help, !help.isEmpty {
+            if spec.kind != "bool", let help = spec.help, !help.isEmpty {
                 Text(help)
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
-                    .lineLimit(1)
             }
-            Spacer()
+        }
+    }
+
+    /// Open an NSOpenPanel to pick a script / executable file and
+    /// write the selected path back into ``params[name]``.
+    private func pickFile(for name: String) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Select"
+        panel.message = "Choose a script or executable to run"
+        panel.treatsFilePackagesAsDirectories = true
+        // Show everything; shell scripts often have no extension.
+        panel.showsHiddenFiles = true
+        NSApp.activate(ignoringOtherApps: true)
+        if panel.runModal() == .OK, let url = panel.url {
+            params[name] = .string(url.path)
         }
     }
 }

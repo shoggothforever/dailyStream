@@ -1045,12 +1045,19 @@ def _register_capture_modes_methods(d: Dispatcher, state: _ServerState) -> None:
 
     # -- execution ------------------------------------------------------
 
-    def _make_context(mode_id: str, silent: bool = False) -> ExecutionContext:
+    def _make_context(mode_id: str, silent: bool = False,
+                      preset: Optional[Preset] = None) -> ExecutionContext:
+        cm = _ensure_state()
+        mode = next((m for m in cm.modes if m.id == mode_id), None)
         return ExecutionContext(
             wm=state.wm,
             pm=state.pm,
             publish_event=d.event_bus.publish,
             mode_id=mode_id,
+            mode_name=mode.name if mode else "",
+            preset_id=preset.id if preset else "",
+            preset_name=preset.name if preset else "",
+            config=state.config,
             silent=silent,
         )
 
@@ -1121,7 +1128,7 @@ def _register_capture_modes_methods(d: Dispatcher, state: _ServerState) -> None:
         preset = cm.find_preset(mode_id, preset_id)
         if preset is None:
             raise NotFound(f"Preset not found: {mode_id}/{preset_id}")
-        ctx = _make_context(mode_id, silent=silent)
+        ctx = _make_context(mode_id, silent=silent, preset=preset)
         executor = CaptureExecutor()
         report = executor.execute(preset, ctx)
         _deliver_frames(report, preset)
@@ -1164,7 +1171,7 @@ def _register_capture_modes_methods(d: Dispatcher, state: _ServerState) -> None:
             )
             while not stop_event.is_set():
                 try:
-                    ctx = _make_context(mode_id, silent=True)
+                    ctx = _make_context(mode_id, silent=True, preset=preset)
                     report = executor.execute(preset, ctx)
                     _deliver_frames(report, preset)
                     d.event_bus.publish("capture.mode_preset_executed",

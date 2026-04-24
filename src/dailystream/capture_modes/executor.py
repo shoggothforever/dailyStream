@@ -17,16 +17,17 @@ returns an :class:`ExecutionReport` describing each frame so callers can
 emit the usual ``capture.mode_preset_executed`` notification.
 
 The executor is **synchronous**: blocking for the duration of the whole
-recipe.  For ``interval`` and ``hold_to_repeat`` strategies the caller
-is expected to wrap the call in a background thread or to use the
-dedicated RPC methods (``capture.start_interval`` /
-``capture.stop_interval``) implemented elsewhere.
+recipe.  For ``interval`` strategies the caller is expected to wrap the
+call in a background thread or to use the dedicated RPC methods
+(``capture_modes.start_interval`` / ``capture_modes.stop_interval``)
+implemented elsewhere.
 """
 
 from __future__ import annotations
 
 import logging
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -78,6 +79,16 @@ class ExecutionContext:
     pm: Optional[PipelineLike]
     publish_event: EventPublisher
     mode_id: str = ""
+    mode_name: str = ""
+    preset_id: str = ""
+    preset_name: str = ""
+    # Optional config reference — needed by Attachments that reach into
+    # the AI layer (e.g. ``ai_analyze``).
+    config: Optional[Any] = None
+    # Optional pre-typed description; used as ``DAILYSTREAM_DESCRIPTION``
+    # when running hooks in silent mode.  Non-silent mode leaves this
+    # empty and the Swift HUD collects one from the user.
+    description: str = ""
     # When True, skip the HUD / description prompt even if ``silent_save``
     # attachment is absent — used by RPC callers that handle HUDs
     # themselves.
@@ -177,24 +188,35 @@ def _group_attachments(atts: list[Attachment]) -> _AttGroups:
 class _WindowCtrlHandler:
     """Applies and later restores WINDOW_CTRL attachments.
 
-    Each method returns an opaque "restore token" that is consumed by
-    :meth:`teardown`.  Handlers that can't run on this platform should
-    degrade to a no-op instead of raising.
+    Each setup method records one or more undo callbacks in
+    ``_restore``; :meth:`teardown` invokes them in reverse order.
+    Handlers that can't run on this platform should degrade to a no-op
+    instead of raising.
+
+    Two supported attachments:
+
+    * ``hide_cursor`` — exposed as the ``hide_cursor`` property; the
+      source layer reads it and adds ``screencapture -C`` so the mouse
+      pointer is omitted from the PNG.  (In-process ``NSCursor.hide()``
+      has no effect across app boundaries and is unused.)
+    * ``hide_dock`` — toggles the system-wide Dock auto-hide flag via
+      AppleScript so the Dock animates out before the shot and is
+      restored afterwards.
     """
 
     def __init__(self, atts: list[Attachment]) -> None:
         self.atts = atts
         self._restore: list[Callable[[], None]] = []
+        # Observable state consulted by the source layer.
+        self.hide_cursor: bool = False
 
     def setup(self) -> None:
         for att in self.atts:
             try:
                 if att.id == "hide_cursor":
-                    self._setup_hide_cursor()
+                    self.hide_cursor = True
                 elif att.id == "hide_dock":
                     self._setup_hide_dock()
-                elif att.id == "bring_to_front":
-                    self._setup_bring_to_front(att.params)
             except Exception:  # noqa: BLE001
                 logger.exception("window_ctrl setup failed for %s", att.id)
 
@@ -209,36 +231,63 @@ class _WindowCtrlHandler:
 
     # Individual setups --------------------------------------------------
 
-    def _setup_hide_cursor(self) -> None:
-        try:
-            import AppKit  # type: ignore[import]
-        except Exception:  # noqa: BLE001
-            return
-        AppKit.NSCursor.hide()
-        self._restore.append(lambda: AppKit.NSCursor.unhide())
-
     def _setup_hide_dock(self) -> None:
-        try:
-            import AppKit  # type: ignore[import]
-        except Exception:  # noqa: BLE001
-            return
-        app = AppKit.NSApp
-        prev = app.presentationOptions()
-        new = prev | AppKit.NSApplicationPresentationAutoHideDock
-        app.setPresentationOptions_(new)
-        self._restore.append(lambda: app.setPresentationOptions_(prev))
+        """Toggle the Dock's auto-hide state via AppleScript.
 
-    def _setup_bring_to_front(self, params: dict[str, Any]) -> None:
-        # Without a specific bundle id we simply activate whatever app
-        # owns the frontmost window — same behaviour as clicking on it.
+        ``NSApplicationPresentationAutoHideDock`` only affects the
+        calling app's presentation stack — useless for a menu-bar-only
+        accessory.  System Events is the portable way to drive
+        ``com.apple.dock``; we remember the previous state and restore
+        it unconditionally.
+        """
         try:
-            import AppKit  # type: ignore[import]
+            prev_str = subprocess.check_output(
+                [
+                    "osascript", "-e",
+                    'tell application "System Events" to '
+                    'get the autohide of the dock preferences',
+                ],
+                text=True,
+                timeout=3,
+            ).strip().lower()
         except Exception:  # noqa: BLE001
+            logger.warning("hide_dock: failed to read current dock state")
             return
-        ws = AppKit.NSWorkspace.sharedWorkspace()
-        front = ws.frontmostApplication()
-        if front is not None:
-            front.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+
+        prev_enabled = (prev_str == "true")
+        if prev_enabled:
+            # Already hidden — nothing to do and nothing to undo.
+            return
+
+        try:
+            subprocess.run(
+                [
+                    "osascript", "-e",
+                    'tell application "System Events" to '
+                    'set autohide of dock preferences to true',
+                ],
+                timeout=3,
+                check=False,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("hide_dock: failed to enable auto-hide")
+            return
+
+        def _restore() -> None:
+            try:
+                subprocess.run(
+                    [
+                        "osascript", "-e",
+                        'tell application "System Events" to '
+                        'set autohide of dock preferences to false',
+                    ],
+                    timeout=3,
+                    check=False,
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("hide_dock: failed to restore auto-hide state")
+
+        self._restore.append(_restore)
 
 
 # -- feedback handlers ------------------------------------------------------
@@ -317,10 +366,10 @@ def _run_post(att: Attachment, frame: FrameResult,
         elif att.id == "auto_copy_clipboard":
             _copy_image_to_clipboard(frame.path)
             frame.post_artifacts["copied_to_clipboard"] = True
-        elif att.id == "open_in_editor":
-            editor = str(att.params.get("editor", "default"))
-            _open_in_editor(frame.path, editor)
-            frame.post_artifacts["opened_editor"] = editor
+        elif att.id == "run_command":
+            _run_command(att.params, frame, ctx)
+        elif att.id == "ai_analyze":
+            _run_ai_analyze(att.params, frame, ctx)
     except Exception:  # noqa: BLE001
         logger.exception("post handler failed for %s", att.id)
 
@@ -374,19 +423,197 @@ def _copy_image_to_clipboard(path: Path) -> None:
     pb.writeObjects_([image])
 
 
-def _open_in_editor(path: Path, editor: str) -> None:
-    if editor == "preview":
-        subprocess.Popen(["open", "-a", "Preview", str(path)])
-    elif editor == "vscode":
-        subprocess.Popen(["open", "-a", "Visual Studio Code", str(path)])
+def _run_command(params: dict[str, Any], frame: FrameResult,
+                 ctx: ExecutionContext) -> None:
+    """Run a user-defined shell command / script.
+
+    The command can be either an executable script path or an inline
+    shell command.  Context is passed via ``DAILYSTREAM_*`` environment
+    variables so scripts stay readable.
+
+    On failure we emit a ``capture.hook_failed`` event so the Swift side
+    can surface a toast; successful stdout is attached to
+    ``frame.post_artifacts['hook_stdout']`` for later consumption.
+    """
+    import os
+    import shlex
+
+    cmd_raw = str(params.get("command", "")).strip()
+    if not cmd_raw:
+        return
+    wait = bool(params.get("wait", False))
+    timeout = int(params.get("timeout_seconds", 30))
+
+    env = os.environ.copy()
+    env.update({
+        "DAILYSTREAM_FRAME_PATH": str(frame.path) if frame.path else "",
+        "DAILYSTREAM_OCR_TEXT": str(frame.post_artifacts.get("ocr_text", "") or ""),
+        "DAILYSTREAM_PRESET_ID": ctx.preset_id,
+        "DAILYSTREAM_PRESET_NAME": ctx.preset_name,
+        "DAILYSTREAM_MODE_ID": ctx.mode_id,
+        "DAILYSTREAM_MODE_NAME": ctx.mode_name,
+        "DAILYSTREAM_PIPELINE": ctx.wm.get_active_pipeline() or "",
+        "DAILYSTREAM_DESCRIPTION": ctx.description,
+        "DAILYSTREAM_TIMESTAMP": _iso_now(),
+        "DAILYSTREAM_WORKSPACE_DIR": _workspace_dir_for(ctx),
+    })
+
+    # If the command looks like an existing file path, execute it
+    # directly; otherwise let the shell interpret it.
+    path = Path(cmd_raw)
+    if path.is_file():
+        argv: list[str] = [str(path)]
+        use_shell = False
     else:
-        subprocess.Popen(["open", str(path)])
+        argv = [cmd_raw]
+        use_shell = True
+
+    def _execute() -> None:
+        try:
+            proc = subprocess.run(
+                argv if not use_shell else cmd_raw,
+                shell=use_shell,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if proc.returncode != 0:
+                ctx.publish_event("capture.hook_failed", {
+                    "kind": "run_command",
+                    "command": cmd_raw,
+                    "returncode": proc.returncode,
+                    "stderr": (proc.stderr or "").strip()[:400],
+                })
+            else:
+                stdout = (proc.stdout or "").strip()
+                if stdout:
+                    # Store (inside the frame report; thread-safe because
+                    # each frame has its own dict and only one handler
+                    # writes to it).
+                    frame.post_artifacts["hook_stdout"] = stdout[:2000]
+        except subprocess.TimeoutExpired:
+            ctx.publish_event("capture.hook_failed", {
+                "kind": "run_command",
+                "command": cmd_raw,
+                "error": f"timeout after {timeout}s",
+            })
+        except Exception as e:  # noqa: BLE001
+            logger.exception("run_command failed")
+            ctx.publish_event("capture.hook_failed", {
+                "kind": "run_command",
+                "command": cmd_raw,
+                "error": str(e),
+            })
+
+    if wait:
+        _execute()
+    else:
+        threading.Thread(target=_execute, daemon=True,
+                         name="dailystream-hook").start()
+
+
+def _run_ai_analyze(params: dict[str, Any], frame: FrameResult,
+                    ctx: ExecutionContext) -> None:
+    """Run Claude analysis on the frame and optionally prefill the HUD.
+
+    Uses the same ``ImageAnalyzer`` / ``AnalysisStore`` as the realtime
+    AI mode, so results are compatible with the existing analysis
+    viewer.
+    """
+    if frame.path is None or ctx.config is None:
+        return
+
+    wait = bool(params.get("wait", True))
+    prefill = bool(params.get("prefill_hud", True))
+    save_to_analysis = bool(params.get("save_to_analysis", True))
+    user_hint = str(params.get("user_hint", "")).strip()
+
+    def _do_analyse() -> None:
+        try:
+            from ..ai_analyzer import (
+                AnalysisResult,
+                AnalysisStore,
+                ImageAnalyzer,
+            )
+        except ImportError:
+            return
+
+        analyzer = ImageAnalyzer(ctx.config)
+        if not analyzer.available:
+            ctx.publish_event("capture.hook_failed", {
+                "kind": "ai_analyze",
+                "error": "AI analyzer is not available "
+                         "(missing API key or anthropic SDK)",
+            })
+            return
+
+        result = analyzer.analyze_image(frame.path, user_hint=user_hint)
+        if result is None:
+            ctx.publish_event("capture.hook_failed", {
+                "kind": "ai_analyze",
+                "error": "Analysis returned no result",
+            })
+            return
+
+        # Build a single-line summary the HUD can pre-fill.
+        description_parts: list[str] = []
+        if result.description:
+            description_parts.append(result.description.strip())
+        if result.category:
+            description_parts.append(f"[{result.category}]")
+        if result.elements:
+            tag_line = " ".join(f"#{t}" for t in result.elements[:5])
+            if tag_line:
+                description_parts.append(tag_line)
+        summary = " ".join(description_parts).strip()[:400]
+
+        if summary:
+            frame.post_artifacts["ai_description"] = summary
+            if prefill:
+                # Same key as OCR — the HUD prefers ai_description over
+                # ocr_text when both are present (handled Swift-side).
+                frame.post_artifacts.setdefault("ocr_text", summary)
+                frame.post_artifacts["ai_prefill"] = True
+
+        # Persist into ai_analyses.json so the existing viewer picks it up.
+        if save_to_analysis and ctx.pm is not None and ctx.wm.is_active:
+            try:
+                pipeline = ctx.wm.get_active_pipeline()
+                if pipeline and hasattr(ctx.pm, "get_ai_analyses_path"):
+                    store_path = ctx.pm.get_ai_analyses_path(pipeline)  # type: ignore[attr-defined]
+                    store = AnalysisStore(store_path, pipeline_name=pipeline)
+                    result.entry_index = -1
+                    result.timestamp = _iso_now()
+                    store.set_model(analyzer._model)
+                    store.append(result)
+            except Exception:  # noqa: BLE001
+                logger.exception("ai_analyze persistence failed")
+
+    if wait:
+        _do_analyse()
+    else:
+        threading.Thread(target=_do_analyse, daemon=True,
+                         name="dailystream-ai").start()
+
+
+# --- Small helpers shared by hook handlers --------------------------------
+
+def _iso_now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _workspace_dir_for(ctx: ExecutionContext) -> str:
+    ws_dir = getattr(ctx.wm, "workspace_dir", None)
+    return str(ws_dir) if ws_dir else ""
 
 
 # -- source handlers --------------------------------------------------------
 
 
-def _acquire_source(source: Source, ctx: ExecutionContext) -> Optional[Path]:
+def _acquire_source(source: Source, ctx: ExecutionContext,
+                    hide_cursor: bool = False) -> Optional[Path]:
     """Grab one frame according to the Preset's source definition."""
     assert ctx.pm is not None, "ExecutionContext.pm required for source acquisition"
     save_dir = ctx.pm.get_screenshots_dir()
@@ -402,12 +629,18 @@ def _acquire_source(source: Source, ctx: ExecutionContext) -> Optional[Path]:
         if not source.region:
             logger.warning("REGION source missing coords")
             return None
-        return take_screenshot(save_dir, region=source.region)
+        return take_screenshot(
+            save_dir, region=source.region, no_cursor=hide_cursor,
+        )
     if source.kind == SourceKind.FULLSCREEN:
-        return take_screenshot(save_dir, mode="fullscreen")
+        return take_screenshot(
+            save_dir, mode="fullscreen", no_cursor=hide_cursor,
+        )
     # WINDOW falls back to interactive until we ship a dedicated
     # window-picker overlay.
-    return take_screenshot(save_dir, mode="interactive")
+    return take_screenshot(
+        save_dir, mode="interactive", no_cursor=hide_cursor,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -429,8 +662,7 @@ class CaptureExecutor:
         * Returns immediately for ``interval`` strategy (delegates to
           the long-running RPC path).
         * Returns after N frames for ``burst``.
-        * Returns after one frame for ``single`` and ``hold_to_repeat``
-          (the latter is driven by the Swift key-up event).
+        * Returns after one frame for ``single``.
         """
         report = ExecutionReport(
             mode_id=ctx.mode_id,
@@ -440,11 +672,11 @@ class CaptureExecutor:
         groups = _group_attachments(preset.attachments)
 
         # Determine silent mode: executor-level override OR silent_save
-        # attachment OR strategy where prompting per-frame makes no sense
-        # (burst / interval / hold).
+        # attachment OR multi-frame strategies where prompting per-frame
+        # makes no sense (burst / interval).
         strategy_id = groups.strategy.id if groups.strategy else "single"
         silent_att = any(a.id == "silent_save" for a in groups.feedback)
-        multishot = strategy_id in ("burst", "interval", "hold_to_repeat")
+        multishot = strategy_id in ("burst", "interval")
         report.silent = ctx.silent or silent_att or multishot
 
         # WINDOW_CTRL setup (restored after source acquisition).
@@ -460,10 +692,6 @@ class CaptureExecutor:
                 # Interval handled by the dedicated start/stop RPCs —
                 # treat a direct execute() as "take one frame now and
                 # let the caller schedule the rest".
-                self._run_single(preset, groups, report, ctx)
-            elif strategy_id == "hold_to_repeat":
-                # Same rationale as interval — Swift side drives the
-                # repeat; here we take a single frame.
                 self._run_single(preset, groups, report, ctx)
             else:
                 self._run_single(preset, groups, report, ctx)
@@ -509,7 +737,12 @@ class CaptureExecutor:
         )
 
         try:
-            path = _acquire_source(preset.source, ctx)
+            hide_cursor = any(
+                a.id == "hide_cursor" for a in groups.window_ctrl
+            )
+            path = _acquire_source(
+                preset.source, ctx, hide_cursor=hide_cursor,
+            )
         except Exception as e:  # noqa: BLE001
             logger.exception("Source acquisition failed")
             frame.error = str(e)
