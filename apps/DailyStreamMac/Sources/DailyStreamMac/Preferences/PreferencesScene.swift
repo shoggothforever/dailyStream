@@ -73,6 +73,9 @@ struct HotkeysPane: View {
             Section("Clipboard Capture") {
                 KeyboardShortcuts.Recorder("Shortcut:", name: .clipboardCapture)
             }
+            Section("Pipeline Switcher") {
+                KeyboardShortcuts.Recorder("Shortcut:", name: .pipelinePicker)
+            }
             Section {
                 Text("Preset-specific hotkeys are managed from the\nScreenshot menu → presets.")
                     .font(DSFont.caption)

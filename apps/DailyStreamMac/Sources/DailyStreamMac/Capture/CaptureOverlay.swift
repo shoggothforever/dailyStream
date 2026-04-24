@@ -20,21 +20,31 @@ import Quartz
 
 @MainActor
 enum CaptureOverlay {
+    /// Prevent the coordinator from being deallocated while the
+    /// overlay is active.  Cleared in `handleResult`.
+    private static var activeCoordinator: OverlayCoordinator?
+
     /// Show full-screen overlays on every screen.  Returns the selected
     /// region as "x,y,w,h" in global screen-pixel coordinates, or nil
     /// when cancelled.
     static func selectRegion() async -> String? {
         await withCheckedContinuation { cont in
             let coordinator = OverlayCoordinator(continuation: cont)
+            activeCoordinator = coordinator
             coordinator.show()
         }
+    }
+
+    /// Called by the coordinator when it finishes, so we can release it.
+    fileprivate static func coordinatorDidFinish() {
+        activeCoordinator = nil
     }
 }
 
 // MARK: - Coordinator ---------------------------------------------------
 
 @MainActor
-private final class OverlayCoordinator {
+fileprivate final class OverlayCoordinator {
     private var windows: [NSWindow] = []
     private var continuation: CheckedContinuation<String?, Never>?
     private var delivered = false
@@ -92,6 +102,7 @@ private final class OverlayCoordinator {
         guard let rect else {
             continuation?.resume(returning: nil)
             continuation = nil
+            CaptureOverlay.coordinatorDidFinish()
             return
         }
 
@@ -109,5 +120,6 @@ private final class OverlayCoordinator {
         let region = "\(x),\(y),\(w),\(h)"
         continuation?.resume(returning: region)
         continuation = nil
+        CaptureOverlay.coordinatorDidFinish()
     }
 }

@@ -31,8 +31,12 @@ final class StreamViewerWindow {
             return
         }
 
+        // Default to filling the screen's visible area (excluding menu bar / Dock).
+        let screenFrame = NSScreen.main?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 820, height: 700)
+
         let w = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 820, height: 700),
+            contentRect: screenFrame,
             styleMask: [.titled, .closable, .resizable, .miniaturizable,
                         .fullSizeContentView],
             backing: .buffered,
@@ -41,7 +45,6 @@ final class StreamViewerWindow {
         w.isReleasedWhenClosed = false
         w.titlebarAppearsTransparent = true
         w.title = "Stream"
-        w.center()
         w.contentViewController = NSHostingController(rootView: content)
         w.contentMinSize = NSSize(width: 520, height: 400)
         w.makeKeyAndOrderFront(nil)
@@ -289,6 +292,11 @@ struct StreamViewerContent: View {
     @ObservedObject var viewModel: StreamViewerViewModel
     let onClose: () -> Void
 
+    /// Anchor IDs for scroll-to-top / scroll-to-bottom.
+    private enum ScrollAnchor: Hashable {
+        case top, bottom
+    }
+
     /// Base URL for resolving relative image paths in Markdown.
     private var imageBaseURL: URL {
         URL(fileURLWithPath: viewModel.workspacePath, isDirectory: true)
@@ -298,18 +306,76 @@ struct StreamViewerContent: View {
         VStack(spacing: 0) {
             toolbar
             Divider()
-            ScrollView {
-                Markdown(viewModel.markdownContent, imageBaseURL: imageBaseURL)
-                    .markdownTheme(.gitHub)
-                    .markdownImageProvider(LocalImageProvider())
-                    .textSelection(.enabled)
-                    .padding(24)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    // Invisible top anchor
+                    Color.clear
+                        .frame(height: 0)
+                        .id(ScrollAnchor.top)
+
+                    Markdown(viewModel.markdownContent, imageBaseURL: imageBaseURL)
+                        .markdownTheme(.gitHub)
+                        .markdownImageProvider(LocalImageProvider())
+                        .textSelection(.enabled)
+                        .padding(24)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    // Invisible bottom anchor
+                    Color.clear
+                        .frame(height: 0)
+                        .id(ScrollAnchor.bottom)
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    scrollButtons(proxy: proxy)
+                }
             }
         }
         .frame(minWidth: 520, minHeight: 400)
         .background(Color(nsColor: .windowBackgroundColor))
     }
+
+    // MARK: - Scroll-to buttons (floating, bottom-right)
+
+    private func scrollButtons(proxy: ScrollViewProxy) -> some View {
+        VStack(spacing: 6) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    proxy.scrollTo(ScrollAnchor.top, anchor: .top)
+                }
+            } label: {
+                Image(systemName: "arrow.up.to.line")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .background(
+                Circle()
+                    .fill(.ultraThinMaterial)
+                    .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+            )
+            .help("Scroll to top (⌘↑)")
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    proxy.scrollTo(ScrollAnchor.bottom, anchor: .bottom)
+                }
+            } label: {
+                Image(systemName: "arrow.down.to.line")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .background(
+                Circle()
+                    .fill(.ultraThinMaterial)
+                    .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+            )
+            .help("Scroll to bottom (⌘↓)")
+        }
+        .padding(12)
+    }
+
+    // MARK: - Toolbar
 
     private var toolbar: some View {
         HStack(spacing: 12) {

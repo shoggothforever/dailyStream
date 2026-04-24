@@ -43,6 +43,9 @@ public final class AppState: ObservableObject {
     @Published public private(set) var aiDefaultMode: String = "off"
     @Published public private(set) var screenshotMode: String = "interactive"
     @Published public private(set) var presets: [ScreenshotPreset] = []
+    /// Called whenever the preset list changes so HotkeyManager can
+    /// re-register dynamic shortcuts.
+    public var onPresetsChanged: (([ScreenshotPreset]) -> Void)?
     /// Remembers the last workspace dir so the user can quickly reopen it.
     @Published public private(set) var lastWorkspacePath: String? = nil
 
@@ -332,6 +335,7 @@ public final class AppState: ObservableObject {
         } catch {
             presets = []
         }
+        onPresetsChanged?(presets)
     }
 
     public func createPreset(_ values: PresetValues) async {
@@ -409,6 +413,33 @@ public final class AppState: ObservableObject {
             await refreshStatus()
         } catch {
             showToast(title: "Switch failed", subtitle: "\(error)")
+        }
+    }
+
+    /// Show the Spotlight-style pipeline quick-switcher.
+    public func showPipelinePicker() async {
+        guard workspace.isActive else {
+            showToast(title: "No active workspace")
+            return
+        }
+
+        let result: PipelinePickerResult? = await HUDHost.shared.present { close in
+            PipelinePickerView(
+                pipelines: workspace.pipelines,
+                activePipeline: workspace.activePipeline,
+                onClose: close
+            )
+        }
+        guard let result else { return }
+
+        switch result {
+        case .switchTo(let name):
+            await switchPipeline(to: name)
+            showToast(title: "Pipeline: \(name)")
+        case .create(let name):
+            await createPipeline(NewPipelineValues(
+                name: name, description: "", goal: ""
+            ))
         }
     }
 

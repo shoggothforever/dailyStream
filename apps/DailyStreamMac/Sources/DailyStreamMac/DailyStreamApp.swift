@@ -52,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Best-effort graceful shutdown.
         let sem = DispatchSemaphore(value: 0)
         Task { @MainActor in
+            AppHost.shared.teardown()
             await AppHost.shared.state.shutdown()
             sem.signal()
         }
@@ -79,8 +80,17 @@ final class AppHost {
 
     /// Called once from the AppDelegate after app launch.
     func boot() async {
+        // Wire up preset hotkey sync before boot so the initial
+        // refreshPresets() call already triggers it.
+        state.onPresetsChanged = { [weak self] presets in
+            self?.hotkeys.syncPresetHotkeys(presets)
+        }
         await state.boot()
         hotkeys.install()
+    }
+
+    func teardown() {
+        hotkeys.teardown()
     }
 }
 
