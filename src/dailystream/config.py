@@ -5,7 +5,10 @@ import os
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from .capture_modes.models import ModesState
 
 
 CONFIG_DIR = Path.home() / ".dailystream"
@@ -55,24 +58,69 @@ class Config:
     ai_batch_size: int = 10  # max images per batch in daily_report mode
     ai_default_mode: str = "off"  # default ai_mode when creating a new workspace
 
+    # --- Capture Mode Designer state (not a dataclass field — kept as
+    # an attribute so it survives ``asdict`` without clobbering the
+    # legacy ``screenshot_*`` fields).  Populated by :meth:`load` via
+    # the capture_modes migration helpers.
+    #
+    # ``capture_modes`` is intentionally declared *outside* the
+    # ``@dataclass`` fields so existing call sites that ``asdict`` the
+    # config won't crash on a new field, and legacy readers stay happy.
+
     @classmethod
     def load(cls) -> "Config":
-        """Load config from file, create default if not exists."""
+        """Load config from file, create default if not exists.
+
+        Also materialises the Capture Mode Designer state
+        (``capture_modes``), running a one-shot migration from the
+        legacy ``screenshot_mode`` + ``screenshot_presets`` fields when
+        needed.  Legacy fields are retained on disk for rollback.
+        """
+        raw: dict = {}
         if CONFIG_FILE.exists():
             try:
-                data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-                return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+                raw = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+                if not isinstance(raw, dict):
+                    raw = {}
             except (json.JSONDecodeError, TypeError):
+                raw = {}
+
+        field_names = set(cls.__dataclass_fields__)
+        config = cls(**{k: v for k, v in raw.items() if k in field_names})
+
+        from .capture_modes.migrations import migrate_legacy_presets
+
+        try:
+            state, did_migrate = migrate_legacy_presets(raw)
+        except Exception:  # noqa: BLE001
+            from .capture_modes.migrations import default_modes
+            state = default_modes()
+            did_migrate = True
+
+        # Store on the instance (not a dataclass field).
+        config.capture_modes = state
+
+        # Persist the first time so users see the new structure in
+        # config.json right away.
+        if did_migrate or not CONFIG_FILE.exists():
+            try:
+                config.save()
+            except Exception:  # noqa: BLE001
+                # Saving is best-effort; keep running in-memory.
                 pass
-        config = cls()
-        config.save()
         return config
 
     def save(self) -> None:
-        """Save config to file."""
+        """Save config to file (including ``capture_modes`` state)."""
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        data = asdict(self)
+
+        state: Optional["ModesState"] = getattr(self, "capture_modes", None)
+        if state is not None:
+            data["capture_modes"] = state.to_dict()
+
         CONFIG_FILE.write_text(
-            json.dumps(asdict(self), indent=2, ensure_ascii=False),
+            json.dumps(data, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
 

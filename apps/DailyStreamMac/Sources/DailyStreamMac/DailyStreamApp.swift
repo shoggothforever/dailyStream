@@ -81,9 +81,13 @@ final class AppHost {
     /// Called once from the AppDelegate after app launch.
     func boot() async {
         // Wire up preset hotkey sync before boot so the initial
-        // refreshPresets() call already triggers it.
-        state.onPresetsChanged = { [weak self] presets in
-            self?.hotkeys.syncPresetHotkeys(presets)
+        // refreshPresets() / refreshCaptureModes() call already triggers it.
+        state.onPresetsChanged = { _ in
+            // Legacy presets are now represented inside captureModes;
+            // we keep this hook empty to avoid double registration.
+        }
+        state.onActiveModePresetsChanged = { [weak self] presets in
+            self?.hotkeys.syncPresets(presets)
         }
         await state.boot()
         hotkeys.install()

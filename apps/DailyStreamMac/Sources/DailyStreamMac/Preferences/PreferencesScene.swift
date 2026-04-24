@@ -87,14 +87,69 @@ struct HotkeysPane: View {
 }
 
 struct CapturePane: View {
+    @ObservedObject private var state = AppHost.shared.state
+
     var body: some View {
         Form {
-            Section {
-                Text("Capture mode and preset management coming soon.")
+            Section("Capture Mode Designer") {
+                Text("Design Modes, build Presets from atomic Attachments, and bind hotkeys.  Switching Mode swaps the whole set of bindings — shortcuts from other Modes are never active at the same time.")
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
+
+                if let active = state.captureModes.activeMode {
+                    HStack {
+                        Text("Active Mode")
+                        Spacer()
+                        Text("\(active.emoji) \(active.name)")
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("Presets")
+                        Spacer()
+                        Text("\(active.presets.count)")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                HStack {
+                    Spacer()
+                    Button("Open Designer…") {
+                        CaptureModeDesignerWindow.shared.show(state: state)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+
+            Section("Running Intervals") {
+                if state.runningIntervals.isEmpty {
+                    Text("No interval captures are currently running.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                } else {
+                    ForEach(Array(state.runningIntervals).sorted(), id: \.self) { key in
+                        HStack {
+                            Image(systemName: "circle.fill")
+                                .foregroundStyle(.orange)
+                                .font(.system(size: 8))
+                            Text(key)
+                                .font(.system(.body, design: .monospaced))
+                            Spacer()
+                            Button("Stop") {
+                                Task { await stopInterval(key: key) }
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+                }
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func stopInterval(key: String) async {
+        let parts = key.split(separator: "/", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { return }
+        await state.stopInterval(modeID: parts[0], presetID: parts[1])
     }
 }
 

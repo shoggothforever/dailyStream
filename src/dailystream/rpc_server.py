@@ -120,6 +120,9 @@ class _ServerState:
         # Pipeline manager is built lazily and rebuilt whenever the
         # active workspace changes (via _refresh_pipeline_manager).
         self._pm = None
+        # Background interval-capture workers keyed by "mode_id/preset_id".
+        # Each entry is a dict {"thread": Thread, "stop": Event}.
+        self._interval_workers: dict[str, dict] = {}
         if self.wm.is_active and self.wm.workspace_dir is not None:
             self._refresh_pipeline_manager()
             if (self.wm.meta and
@@ -158,6 +161,17 @@ class _ServerState:
             except Exception:  # noqa: BLE001
                 logger.exception("Failed to shutdown analysis queue")
             self._analysis_queue = None
+
+    def stop_all_interval_workers(self) -> None:
+        """Signal all running interval-capture workers to stop and join."""
+        for key, entry in list(self._interval_workers.items()):
+            stop_event = entry.get("stop")
+            thread = entry.get("thread")
+            if stop_event is not None:
+                stop_event.set()
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=2.0)
+            self._interval_workers.pop(key, None)
 
     @property
     def pm(self):
@@ -213,6 +227,7 @@ def _register_app_methods(d: Dispatcher, state: _ServerState,
     @d.method("app.shutdown")
     def _shutdown() -> str:
         shutdown_flag.set()
+        state.stop_all_interval_workers()
         state.shutdown_analysis_queue()
         return "ok"
 
@@ -856,6 +871,357 @@ def _register_preset_methods(d: Dispatcher, state: _ServerState) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _register_capture_modes_methods(d: Dispatcher, state: _ServerState) -> None:
+    """capture_modes.* — Mode / Preset / Attachment Designer backend.
+
+    These methods are the single source of truth for the Swift Designer
+    UI and the HotkeyManager.  Handlers keep the in-memory
+    ``state.config.capture_modes`` up to date, persist on every mutation,
+    and broadcast events so the Swift side can react without polling.
+    """
+    import threading
+    from .capture_modes import (
+        ATTACHMENT_CATALOG,
+        Attachment,
+        CaptureExecutor,
+        ExecutionContext,
+        Mode,
+        ModesState,
+        Preset,
+        catalog_as_list,
+        validate_attachments,
+    )
+
+    def _state_dict() -> dict:
+        cm = getattr(state.config, "capture_modes", None)
+        if cm is None:
+            return {"modes": [], "active_mode_id": None}
+        return cm.to_dict()
+
+    def _ensure_state() -> "ModesState":
+        cm = getattr(state.config, "capture_modes", None)
+        if cm is None:
+            from .capture_modes import default_modes
+            cm = default_modes()
+            state.config.capture_modes = cm
+            state.config.save()
+        return cm
+
+    def _persist(publish_event: bool = True) -> dict:
+        state.config.save()
+        payload = _state_dict()
+        if publish_event:
+            d.event_bus.publish("capture_modes.changed", payload)
+        return payload
+
+    # -- read methods ---------------------------------------------------
+
+    @d.method("capture_modes.list_modes")
+    def _list_modes() -> dict:
+        _ensure_state()
+        return _state_dict()
+
+    @d.method("capture_modes.get_active")
+    def _get_active() -> dict:
+        cm = _ensure_state()
+        active = cm.get_active()
+        return {
+            "active_mode_id": cm.active_mode_id,
+            "mode": active.to_dict() if active else None,
+        }
+
+    @d.method("capture_modes.list_attachment_catalog")
+    def _list_catalog() -> dict:
+        return {"catalog": catalog_as_list()}
+
+    # -- write methods --------------------------------------------------
+
+    @d.method("capture_modes.switch_active_mode")
+    def _switch_active(mode_id: str) -> dict:
+        cm = _ensure_state()
+        if not any(m.id == mode_id for m in cm.modes):
+            raise NotFound(f"Unknown mode: {mode_id}")
+        state.stop_all_interval_workers()
+        cm.active_mode_id = mode_id
+        _persist()
+        return {"active_mode_id": mode_id}
+
+    @d.method("capture_modes.save_mode")
+    def _save_mode(mode: dict) -> dict:
+        """Create or replace a Mode by id.
+
+        The payload must match :meth:`Mode.to_dict`.  Attachment IDs are
+        validated against the catalog; bad payloads raise ``InvalidParams``.
+        """
+        if not isinstance(mode, dict):
+            raise InvalidParams("'mode' must be a JSON object")
+        parsed = Mode.from_dict(mode)
+        if parsed is None or not parsed.id:
+            raise InvalidParams("Invalid mode payload")
+
+        # Validate every preset's attachments.
+        for p in parsed.presets:
+            errs = validate_attachments(p.attachments)
+            if errs:
+                raise InvalidParams(
+                    f"Preset '{p.name}' has invalid attachments: {'; '.join(errs)}"
+                )
+
+        cm = _ensure_state()
+        replaced = False
+        for idx, existing in enumerate(cm.modes):
+            if existing.id == parsed.id:
+                cm.modes[idx] = parsed
+                replaced = True
+                break
+        if not replaced:
+            cm.modes.append(parsed)
+
+        # If the newly saved mode is the active one we restart interval
+        # workers later via switch — for now just invalidate.
+        if cm.active_mode_id is None:
+            cm.active_mode_id = parsed.id
+
+        state.stop_all_interval_workers()
+        _persist()
+        return {"mode": parsed.to_dict(), "created": not replaced}
+
+    @d.method("capture_modes.delete_mode")
+    def _delete_mode(mode_id: str) -> dict:
+        cm = _ensure_state()
+        idx = next((i for i, m in enumerate(cm.modes) if m.id == mode_id), -1)
+        if idx < 0:
+            raise NotFound(f"Unknown mode: {mode_id}")
+        if len(cm.modes) == 1:
+            raise StateConflict("Cannot delete the last remaining mode")
+        removed = cm.modes.pop(idx)
+        if cm.active_mode_id == mode_id:
+            cm.active_mode_id = cm.modes[0].id
+            state.stop_all_interval_workers()
+        _persist()
+        return {"deleted": removed.id, "active_mode_id": cm.active_mode_id}
+
+    @d.method("capture_modes.save_preset")
+    def _save_preset(mode_id: str, preset: dict) -> dict:
+        """Insert or replace a single preset inside an existing Mode."""
+        if not isinstance(preset, dict):
+            raise InvalidParams("'preset' must be a JSON object")
+        parsed = Preset.from_dict(preset)
+        if parsed is None or not parsed.id:
+            raise InvalidParams("Invalid preset payload")
+        errs = validate_attachments(parsed.attachments)
+        if errs:
+            raise InvalidParams(f"Invalid attachments: {'; '.join(errs)}")
+        cm = _ensure_state()
+        mode = next((m for m in cm.modes if m.id == mode_id), None)
+        if mode is None:
+            raise NotFound(f"Unknown mode: {mode_id}")
+        replaced = False
+        for idx, existing in enumerate(mode.presets):
+            if existing.id == parsed.id:
+                mode.presets[idx] = parsed
+                replaced = True
+                break
+        if not replaced:
+            mode.presets.append(parsed)
+        _persist()
+        return {"preset": parsed.to_dict(), "created": not replaced}
+
+    @d.method("capture_modes.delete_preset")
+    def _delete_preset(mode_id: str, preset_id: str) -> dict:
+        cm = _ensure_state()
+        mode = next((m for m in cm.modes if m.id == mode_id), None)
+        if mode is None:
+            raise NotFound(f"Unknown mode: {mode_id}")
+        idx = next(
+            (i for i, p in enumerate(mode.presets) if p.id == preset_id),
+            -1,
+        )
+        if idx < 0:
+            raise NotFound(f"Unknown preset: {preset_id}")
+        removed = mode.presets.pop(idx)
+        _persist()
+        return {"deleted": removed.id}
+
+    # -- execution ------------------------------------------------------
+
+    def _make_context(mode_id: str, silent: bool = False) -> ExecutionContext:
+        return ExecutionContext(
+            wm=state.wm,
+            pm=state.pm,
+            publish_event=d.event_bus.publish,
+            mode_id=mode_id,
+            silent=silent,
+        )
+
+    def _deliver_frames(report, preset: Preset) -> None:
+        """Feed captured frames into the active pipeline (or not).
+
+        Honours the ``current_pipeline`` DELIVERY attachment (default)
+        vs. absence of any delivery attachment.  If ``silent_save`` is
+        active we skip the HUD round-trip by pushing the feed directly;
+        otherwise the Swift side will pick up
+        ``capture.mode_preset_executed`` and prompt for descriptions.
+        """
+        has_delivery = any(
+            a.id == "current_pipeline" for a in preset.attachments
+        )
+        if not has_delivery:
+            return
+        if not state.wm.is_active or state.pm is None:
+            return
+        pipeline = state.wm.get_active_pipeline()
+        if not pipeline:
+            return
+        if not report.silent:
+            # Non-silent path: Swift will open HUDs for each frame.
+            return
+
+        from dataclasses import asdict as _asdict
+        from .note_sync import NoteSyncManager
+
+        for frame in report.frames:
+            if frame.path is None or frame.skipped:
+                continue
+            description = ""
+            ocr = frame.post_artifacts.get("ocr_text")
+            if ocr:
+                description = str(ocr)[:400]
+            try:
+                entry = state.pm.add_entry(
+                    pipeline, "image", str(frame.path), description,
+                )
+                entry_dict = _asdict(entry)
+                syncer = NoteSyncManager(
+                    state.config, workspace_dir=state.wm.workspace_dir,
+                )
+                pmeta = state.pm.get_pipeline_meta(pipeline)
+                syncer.sync_entry(state.wm.meta, pipeline, entry,
+                                  pipeline_meta=pmeta)
+                entry_index = max(0, len(state.pm.get_entries(pipeline)) - 1)
+                d.event_bus.publish("feed.entry_added", {
+                    "pipeline": pipeline,
+                    "entry_index": entry_index,
+                    "entry": entry_dict,
+                })
+            except Exception:  # noqa: BLE001
+                logger.exception("Silent delivery failed for %s", frame.path)
+
+    @d.method("capture_modes.execute_preset")
+    def _execute_preset(mode_id: str, preset_id: str,
+                        silent: bool = False) -> dict:
+        """Run a Preset end-to-end once (respects its strategy).
+
+        For ``interval`` strategy this captures a single frame and
+        returns — use ``capture_modes.start_interval`` to launch the
+        background loop.
+        """
+        _require_active_workspace(state)
+        cm = _ensure_state()
+        preset = cm.find_preset(mode_id, preset_id)
+        if preset is None:
+            raise NotFound(f"Preset not found: {mode_id}/{preset_id}")
+        ctx = _make_context(mode_id, silent=silent)
+        executor = CaptureExecutor()
+        report = executor.execute(preset, ctx)
+        _deliver_frames(report, preset)
+        payload = report.to_dict()
+        d.event_bus.publish("capture.mode_preset_executed", payload)
+        return payload
+
+    # -- interval long-running tasks -----------------------------------
+
+    def _interval_key(mode_id: str, preset_id: str) -> str:
+        return f"{mode_id}/{preset_id}"
+
+    @d.method("capture_modes.start_interval")
+    def _start_interval(mode_id: str, preset_id: str) -> dict:
+        _require_active_workspace(state)
+        cm = _ensure_state()
+        preset = cm.find_preset(mode_id, preset_id)
+        if preset is None:
+            raise NotFound(f"Preset not found: {mode_id}/{preset_id}")
+        strategy = next(
+            (a for a in preset.attachments if a.id == "interval"), None,
+        )
+        if strategy is None:
+            raise InvalidParams("Preset has no 'interval' strategy")
+
+        key = _interval_key(mode_id, preset_id)
+        if key in state._interval_workers:
+            raise StateConflict(f"Interval already running for {key}")
+
+        seconds = max(1, int(strategy.params.get("seconds", 60)))
+        max_count = int(strategy.params.get("max_count", 0))
+        stop_event = threading.Event()
+
+        def _loop() -> None:
+            executor = CaptureExecutor()
+            count = 0
+            logger.info(
+                "interval worker %s started (every %ss, max=%s)",
+                key, seconds, max_count,
+            )
+            while not stop_event.is_set():
+                try:
+                    ctx = _make_context(mode_id, silent=True)
+                    report = executor.execute(preset, ctx)
+                    _deliver_frames(report, preset)
+                    d.event_bus.publish("capture.mode_preset_executed",
+                                        report.to_dict())
+                except Exception:  # noqa: BLE001
+                    logger.exception("interval worker %s frame failed", key)
+                count += 1
+                if max_count and count >= max_count:
+                    break
+                stop_event.wait(timeout=float(seconds))
+            state._interval_workers.pop(key, None)
+            d.event_bus.publish("capture_modes.interval_stopped", {
+                "mode_id": mode_id,
+                "preset_id": preset_id,
+                "captured": count,
+            })
+
+        thread = threading.Thread(
+            target=_loop, name=f"interval-{key}", daemon=True,
+        )
+        state._interval_workers[key] = {"thread": thread, "stop": stop_event}
+        thread.start()
+        d.event_bus.publish("capture_modes.interval_started", {
+            "mode_id": mode_id,
+            "preset_id": preset_id,
+            "seconds": seconds,
+            "max_count": max_count,
+        })
+        return {"running": True, "mode_id": mode_id,
+                "preset_id": preset_id, "seconds": seconds}
+
+    @d.method("capture_modes.stop_interval")
+    def _stop_interval(mode_id: str, preset_id: str) -> dict:
+        key = _interval_key(mode_id, preset_id)
+        entry = state._interval_workers.get(key)
+        if entry is None:
+            return {"running": False}
+        entry["stop"].set()
+        th = entry.get("thread")
+        if th is not None and th.is_alive():
+            th.join(timeout=2.0)
+        state._interval_workers.pop(key, None)
+        return {"running": False, "mode_id": mode_id, "preset_id": preset_id}
+
+    @d.method("capture_modes.list_running_intervals")
+    def _list_running() -> dict:
+        return {"running": [
+            {"key": k, "alive": bool(v["thread"].is_alive())}
+            for k, v in state._interval_workers.items()
+        ]}
+
+
+# ---------------------------------------------------------------------------
+# Server-level assembly
+# ---------------------------------------------------------------------------
+
+
 def build_dispatcher(
     state: Optional[_ServerState] = None,
     shutdown_flag: Optional[threading.Event] = None,
@@ -879,6 +1245,7 @@ def build_dispatcher(
     _register_ai_methods(d, state)
     _register_config_methods(d, state)
     _register_preset_methods(d, state)
+    _register_capture_modes_methods(d, state)
     return d, state, shutdown_flag
 
 
@@ -956,6 +1323,7 @@ def serve(
         if shutdown_flag.is_set():
             break
 
+    state.stop_all_interval_workers()
     state.shutdown_analysis_queue()
     logger.info("dailystream-core RPC server stopped")
 

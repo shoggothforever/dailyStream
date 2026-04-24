@@ -94,6 +94,17 @@ JSON, one message per line).
 | `ai.analysis_completed` | An AI analysis result is ready |
 | `ai.analysis_progress` | Batch analysis progress update |
 | `ai.analysis_failed` | An analysis task failed |
+| `capture_modes.changed` | Mode/Preset list or active mode changed |
+| `capture_modes.interval_started` | Background interval capture started |
+| `capture_modes.interval_stopped` | Background interval capture ended |
+| `capture.mode_preset_executed` | Preset finished executing; payload is the full ExecutionReport |
+| `capture.flash_menubar` | UI hint: flash the menu-bar icon |
+| `capture.notification` | Post a system notification (payload `{title, body}`) |
+| `capture.quick_tags_prompt` | Open a transient tag-picker HUD |
+
+See `docs/capture_mode_designer.md` for the full `capture_modes.*`
+namespace (list / switch / save / delete / execute Mode & Preset, plus
+`list_attachment_catalog`).
 
 ## Error Codes
 

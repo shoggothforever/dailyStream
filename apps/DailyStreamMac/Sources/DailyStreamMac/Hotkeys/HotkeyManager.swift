@@ -1,9 +1,17 @@
 // HotkeyManager.swift
-// Two-layer hotkey system:
-//  1. sindresorhus/KeyboardShortcuts — static ⌘1 (screenshot) and ⌘2
-//     (clipboard) that can be customised from Settings.
-//  2. CGEventTap — dynamic per-preset hotkeys (e.g. <option>+1) that are
-//     re-registered whenever the preset list changes.
+// Single-layer hotkey system built around the Capture Mode Designer:
+//
+//   * Every preset inside the **active** CaptureMode may bind a hotkey
+//     string (e.g. "<option>+1", "<cmd>+4").  `HotkeyManager` wires those
+//     strings into a CGEventTap so they fire anywhere in the system
+//     regardless of which app has focus.
+//   * Three legacy `KeyboardShortcuts.Name` entries (screenshot /
+//     clipboard / pipeline picker) remain *as a fallback* for users who
+//     deleted every preset.  When the active Mode contains a
+//     `free-selection` / `clipboard` preset with a matching behaviour
+//     they take priority.
+//   * Switching Mode via `syncPresets(_:)` swaps the entire binding set
+//     in one call — presets from other Modes are guaranteed NOT to fire.
 
 import AppKit
 import Carbon.HIToolbox
@@ -97,7 +105,7 @@ private func parseHotkey(_ str: String) -> ParsedHotkey? {
 // MARK: - PresetHotkeyTap -----------------------------------------------
 
 /// Manages a CGEventTap on a background thread, dispatching matched
-/// keyDown events to registered callbacks.
+/// keyDown / keyUp events to registered callbacks.
 ///
 /// Thread-safety: `bindings` is protected by `lock`.  The event-tap
 /// callback reads under the lock; mutations happen on the main thread
@@ -105,8 +113,12 @@ private func parseHotkey(_ str: String) -> ParsedHotkey? {
 private final class PresetHotkeyTap {
     struct Binding {
         let parsed: ParsedHotkey
+        let modeID: String
+        let presetID: String
         let presetName: String
-        let region: String
+        /// When `true` the caller also receives a `keyUp` callback —
+        /// used by the "Hold To Repeat" strategy on the Swift side.
+        let wantsKeyUp: Bool
     }
 
     private var bindings: [Binding] = []
@@ -120,12 +132,17 @@ private final class PresetHotkeyTap {
     private var thread: Thread?
     private var bgRunLoop: CFRunLoop?
 
+    // Track which bindings are currently held down so we can emit a
+    // single `keyUp` even when macOS delivers multiple.
+    private var heldBindings: Set<String> = []
+
     // MARK: Binding management
 
     /// Replace the full set of bindings.  Safe to call repeatedly.
     func updateBindings(_ newBindings: [Binding]) {
         lock.lock()
         bindings = newBindings
+        heldBindings.removeAll()
         lock.unlock()
     }
 
@@ -139,6 +156,7 @@ private final class PresetHotkeyTap {
         let refcon = Unmanaged.passUnretained(self).toOpaque()
 
         let eventMask = (1 << CGEventType.keyDown.rawValue)
+                      | (1 << CGEventType.keyUp.rawValue)
         guard let newTap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
@@ -182,7 +200,7 @@ private final class PresetHotkeyTap {
     // MARK: Matching
 
     /// Called from the C callback on the tap thread.
-    fileprivate func handleEvent(_ event: CGEvent) {
+    fileprivate func handleEvent(_ event: CGEvent, type: CGEventType) {
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         let flags = UInt64(event.flags.rawValue) & kModifierCareMask
 
@@ -190,16 +208,47 @@ private final class PresetHotkeyTap {
         let match = bindings.first {
             $0.parsed.keyCode == keyCode && $0.parsed.modifierMask == flags
         }
+        // Snapshot info needed outside the lock.
+        let key = "\(match?.modeID ?? "")/\(match?.presetID ?? "")"
+        let wasHeld = match != nil ? heldBindings.contains(key) : false
+        if let m = match {
+            if type == .keyDown {
+                heldBindings.insert("\(m.modeID)/\(m.presetID)")
+            } else if type == .keyUp {
+                heldBindings.remove("\(m.modeID)/\(m.presetID)")
+            }
+        }
         lock.unlock()
 
         guard let match else { return }
 
         // Dispatch onto the MainActor so we can safely call AppState.
-        let region = match.region
-        let name = match.presetName
-        Task { @MainActor [weak state] in
-            guard let state else { return }
-            await state.takeScreenshot(region: region, presetName: name)
+        let modeID = match.modeID
+        let presetID = match.presetID
+        let presetName = match.presetName
+        let wantsUp = match.wantsKeyUp
+
+        if type == .keyDown {
+            // macOS emits auto-repeat keyDowns; suppress them here to
+            // avoid firing a second "start" while the user is still
+            // holding the key.
+            if wasHeld && !wantsUp { return }
+            Task { @MainActor [weak state] in
+                guard let state else { return }
+                await state.onPresetHotkeyDown(
+                    modeID: modeID,
+                    presetID: presetID,
+                    presetName: presetName
+                )
+            }
+        } else if type == .keyUp, wantsUp {
+            Task { @MainActor [weak state] in
+                guard let state else { return }
+                await state.onPresetHotkeyUp(
+                    modeID: modeID,
+                    presetID: presetID
+                )
+            }
         }
     }
 }
@@ -222,11 +271,13 @@ private func presetTapCallback(
         return Unmanaged.passUnretained(event)
     }
 
-    guard type == .keyDown else { return Unmanaged.passUnretained(event) }
+    guard type == .keyDown || type == .keyUp else {
+        return Unmanaged.passUnretained(event)
+    }
 
     let tapInstance = Unmanaged<PresetHotkeyTap>.fromOpaque(userInfo)
         .takeUnretainedValue()
-    tapInstance.handleEvent(event)
+    tapInstance.handleEvent(event, type: type)
 
     return Unmanaged.passUnretained(event)
 }
@@ -245,7 +296,9 @@ public final class HotkeyManager {
 
     /// Called exactly once after `AppState.boot()` succeeds.
     public func install() {
-        // 1. Static shortcuts via KeyboardShortcuts library.
+        // 1. Static fallback shortcuts via KeyboardShortcuts library.
+        //    These only fire when the *active* Mode does not already
+        //    claim the same physical key combo.
         KeyboardShortcuts.onKeyDown(for: .screenshot) { [weak state] in
             guard let state else { return }
             Task { await state.takeScreenshot() }
@@ -262,21 +315,25 @@ public final class HotkeyManager {
         // 2. Start the CGEventTap for dynamic preset hotkeys.
         presetTap.start()
 
-        // 3. Sync current presets.
-        syncPresetHotkeys(state.presets)
+        // 3. Sync presets of the currently-active Mode.
+        syncPresets(state.activeModePresets)
     }
 
-    /// Re-register preset hotkeys.  Call whenever `AppState.presets`
-    /// changes (after create / delete / refresh).
-    public func syncPresetHotkeys(_ presets: [ScreenshotPreset]) {
+    /// Re-register preset hotkeys.  Call whenever the active Mode or
+    /// its preset list changes.
+    public func syncPresets(_ presets: [CapturePreset]) {
         var bindings: [PresetHotkeyTap.Binding] = []
+        let modeID = state.captureModes.activeModeID ?? ""
         for preset in presets {
             guard let hotkeyStr = preset.hotkey, !hotkeyStr.isEmpty,
                   let parsed = parseHotkey(hotkeyStr) else { continue }
+            let wantsUp = preset.attachments.contains { $0.id == "hold_to_repeat" }
             bindings.append(.init(
                 parsed: parsed,
+                modeID: modeID,
+                presetID: preset.id,
                 presetName: preset.name,
-                region: preset.region
+                wantsKeyUp: wantsUp
             ))
         }
         presetTap.updateBindings(bindings)

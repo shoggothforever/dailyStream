@@ -1,0 +1,322 @@
+"""Predefined Attachment catalog.
+
+The catalog is the **source of truth** for what atomic capabilities the
+user can pick when building a Preset.  New capabilities are added by
+appending to :data:`ATTACHMENT_CATALOG` *and* writing a handler in
+``capture_modes/handlers/``.
+
+The Designer UI (Swift side) pulls this catalog via the
+``capture_modes.list_attachment_catalog`` RPC so it can render the
+checkboxes + parameter forms without hard-coding anything.
+
+Schema of an :class:`AttachmentSpec`:
+
+* ``id``:              unique string used in :class:`Attachment.id`
+* ``kind``:            category; drives single/multi-choice UI
+* ``label``:           human-readable title for the UI
+* ``description``:     one-line helper text
+* ``icon``:            SF Symbol hint (Swift side)
+* ``params_schema``:   mapping of param_name → (type, default, help)
+* ``mutually_exclusive``: optional list of attachment IDs that cannot
+                          co-exist with this one *across* kinds
+                          (within-kind single-choice is enforced by
+                          :class:`AttachmentKind.single_choice`)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Optional
+
+from .models import Attachment, AttachmentKind
+
+
+@dataclass(frozen=True)
+class ParamSpec:
+    """Parameter schema entry (used by Designer UI + runtime validation)."""
+
+    kind: str          # "int" | "float" | "bool" | "string" | "string_list" | "enum"
+    default: Any
+    help: str = ""
+    enum_values: tuple[str, ...] = ()
+    min: Optional[float] = None
+    max: Optional[float] = None
+
+    def to_dict(self) -> dict:
+        d: dict = {"kind": self.kind, "default": self.default}
+        if self.help:
+            d["help"] = self.help
+        if self.enum_values:
+            d["enum"] = list(self.enum_values)
+        if self.min is not None:
+            d["min"] = self.min
+        if self.max is not None:
+            d["max"] = self.max
+        return d
+
+
+@dataclass(frozen=True)
+class AttachmentSpec:
+    """Static metadata about one predefined atomic capability."""
+
+    id: str
+    kind: AttachmentKind
+    label: str
+    description: str = ""
+    icon: str = "circle"
+    params_schema: dict[str, ParamSpec] = field(default_factory=dict)
+    mutually_exclusive: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "kind": self.kind.value,
+            "label": self.label,
+            "description": self.description,
+            "icon": self.icon,
+            "params_schema": {
+                k: v.to_dict() for k, v in self.params_schema.items()
+            },
+            "mutually_exclusive": list(self.mutually_exclusive),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Catalog entries
+# ---------------------------------------------------------------------------
+
+
+ATTACHMENT_CATALOG: dict[str, AttachmentSpec] = {}
+
+
+def _register(spec: AttachmentSpec) -> None:
+    if spec.id in ATTACHMENT_CATALOG:
+        raise RuntimeError(f"Duplicate attachment id: {spec.id}")
+    ATTACHMENT_CATALOG[spec.id] = spec
+
+
+# -- STRATEGY (single-choice) ----------------------------------------------
+
+_register(AttachmentSpec(
+    id="single",
+    kind=AttachmentKind.STRATEGY,
+    label="Single Shot",
+    description="Capture exactly one frame.",
+    icon="camera",
+))
+
+_register(AttachmentSpec(
+    id="burst",
+    kind=AttachmentKind.STRATEGY,
+    label="Burst",
+    description="Capture N frames at a fixed interval — great for fleeting moments.",
+    icon="camera.on.rectangle",
+    params_schema={
+        "count": ParamSpec(kind="int", default=3, help="Frames to capture", min=2, max=30),
+        "interval_ms": ParamSpec(kind="int", default=200, help="Milliseconds between frames", min=50, max=5000),
+    },
+))
+
+_register(AttachmentSpec(
+    id="interval",
+    kind=AttachmentKind.STRATEGY,
+    label="Interval Timer",
+    description="Capture every N seconds until stopped from the menu bar.",
+    icon="timer",
+    params_schema={
+        "seconds": ParamSpec(kind="int", default=60, help="Seconds between frames", min=1, max=3600),
+        "max_count": ParamSpec(kind="int", default=0, help="Auto-stop after N frames (0 = unlimited)", min=0, max=1000),
+    },
+))
+
+_register(AttachmentSpec(
+    id="hold_to_repeat",
+    kind=AttachmentKind.STRATEGY,
+    label="Hold To Repeat",
+    description="Keep capturing while the hotkey is held down.",
+    icon="hand.tap",
+    params_schema={
+        "interval_ms": ParamSpec(kind="int", default=250, help="Milliseconds between frames", min=100, max=2000),
+    },
+))
+
+
+# -- FEEDBACK (multi-choice) -----------------------------------------------
+
+_register(AttachmentSpec(
+    id="silent_save",
+    kind=AttachmentKind.FEEDBACK,
+    label="Silent Save",
+    description="Skip the description HUD; save directly to the active pipeline.",
+    icon="speaker.slash",
+))
+
+_register(AttachmentSpec(
+    id="flash_menubar",
+    kind=AttachmentKind.FEEDBACK,
+    label="Flash Menu Bar",
+    description="Briefly flash the menu-bar icon so you know the shot was captured.",
+    icon="bolt.horizontal",
+))
+
+_register(AttachmentSpec(
+    id="sound",
+    kind=AttachmentKind.FEEDBACK,
+    label="Shutter Sound",
+    description="Play a soft shutter sound effect on capture.",
+    icon="speaker.wave.2",
+    params_schema={
+        "volume": ParamSpec(kind="float", default=0.5, help="0.0 – 1.0", min=0.0, max=1.0),
+    },
+))
+
+_register(AttachmentSpec(
+    id="notification",
+    kind=AttachmentKind.FEEDBACK,
+    label="System Notification",
+    description="Post a macOS notification after every frame is captured.",
+    icon="bell",
+))
+
+
+# -- WINDOW_CTRL (multi-choice) --------------------------------------------
+
+_register(AttachmentSpec(
+    id="hide_cursor",
+    kind=AttachmentKind.WINDOW_CTRL,
+    label="Hide Cursor",
+    description="Hide the mouse pointer during capture.",
+    icon="cursorarrow.slash",
+))
+
+_register(AttachmentSpec(
+    id="bring_to_front",
+    kind=AttachmentKind.WINDOW_CTRL,
+    label="Bring Frontmost App Up",
+    description="Activate the app under the pointer before capturing.",
+    icon="macwindow.on.rectangle",
+))
+
+_register(AttachmentSpec(
+    id="hide_dock",
+    kind=AttachmentKind.WINDOW_CTRL,
+    label="Hide Dock",
+    description="Temporarily hide the Dock to keep it out of the frame.",
+    icon="dock.rectangle",
+))
+
+
+# -- POST (multi-choice, order matters) ------------------------------------
+
+_register(AttachmentSpec(
+    id="auto_ocr",
+    kind=AttachmentKind.POST,
+    label="Auto OCR",
+    description="Run Vision OCR on the captured image and attach the text.",
+    icon="text.viewfinder",
+))
+
+_register(AttachmentSpec(
+    id="quick_tags",
+    kind=AttachmentKind.POST,
+    label="Quick Tags",
+    description="Offer a 2-second window after capture to press a key and tag the shot.",
+    icon="tag",
+    params_schema={
+        "window_seconds": ParamSpec(kind="float", default=2.0, help="How long the tag window stays open", min=0.5, max=10.0),
+        "tags": ParamSpec(
+            kind="tag_list",
+            default=[
+                {"key": "1", "label": "Highlight", "emoji": "🏆"},
+                {"key": "2", "label": "Death",     "emoji": "💀"},
+                {"key": "3", "label": "Review",    "emoji": "🤔"},
+                {"key": "4", "label": "Funny",     "emoji": "😂"},
+                {"key": "5", "label": "TODO",      "emoji": "📝"},
+            ],
+            help="Each tag binds a single key to a label + emoji",
+        ),
+    },
+))
+
+_register(AttachmentSpec(
+    id="auto_copy_clipboard",
+    kind=AttachmentKind.POST,
+    label="Copy To Clipboard",
+    description="Copy the captured image onto the system clipboard.",
+    icon="doc.on.clipboard",
+))
+
+_register(AttachmentSpec(
+    id="open_in_editor",
+    kind=AttachmentKind.POST,
+    label="Open In Editor",
+    description="Open the saved file in your external editor (Preview by default).",
+    icon="square.and.pencil",
+    params_schema={
+        "editor": ParamSpec(
+            kind="enum",
+            default="default",
+            help="Which editor to launch",
+            enum_values=("default", "preview", "vscode"),
+        ),
+    },
+))
+
+
+# -- DELIVERY (single-choice) ----------------------------------------------
+
+_register(AttachmentSpec(
+    id="current_pipeline",
+    kind=AttachmentKind.DELIVERY,
+    label="Active Pipeline",
+    description="Send the capture to whichever pipeline is currently active.",
+    icon="arrow.right.circle",
+))
+
+
+# ---------------------------------------------------------------------------
+# Lookup + validation
+# ---------------------------------------------------------------------------
+
+
+def catalog_as_list() -> list[dict]:
+    """Return the catalog as a list of dicts (for RPC responses)."""
+    return [spec.to_dict() for spec in ATTACHMENT_CATALOG.values()]
+
+
+def validate_attachments(attachments: list[Attachment]) -> list[str]:
+    """Return a list of human-readable violation messages (empty = OK).
+
+    Rules enforced:
+        * Each attachment id is known.
+        * STRATEGY / DELIVERY at most one per preset.
+        * No ``mutually_exclusive`` pairs co-exist.
+    """
+    errors: list[str] = []
+    seen_single: dict[AttachmentKind, str] = {}
+    seen_ids: set[str] = set()
+
+    for att in attachments:
+        spec = ATTACHMENT_CATALOG.get(att.id)
+        if spec is None:
+            errors.append(f"Unknown attachment id: {att.id}")
+            continue
+
+        if spec.kind in AttachmentKind.single_choice():
+            prev = seen_single.get(spec.kind)
+            if prev is not None:
+                errors.append(
+                    f"Only one {spec.kind.value} attachment allowed; "
+                    f"got both '{prev}' and '{att.id}'"
+                )
+            else:
+                seen_single[spec.kind] = att.id
+
+        for exclusive in spec.mutually_exclusive:
+            if exclusive in seen_ids:
+                errors.append(
+                    f"Attachment '{att.id}' is incompatible with '{exclusive}'"
+                )
+        seen_ids.add(att.id)
+
+    return errors

@@ -21,6 +21,7 @@ public struct MenuBarIcon: View {
         case .idle:       return "circle"
         case .recording:  return "record.circle.fill"
         case .capturing:  return "camera.aperture"
+        case .flashing:   return "bolt.fill"
         }
     }
 
@@ -29,6 +30,7 @@ public struct MenuBarIcon: View {
         case .idle:       return .primary
         case .recording:  return DSColor.accent
         case .capturing:  return DSColor.capturing
+        case .flashing:   return .green
         }
     }
 
@@ -37,6 +39,7 @@ public struct MenuBarIcon: View {
         case .idle:       return "DailyStream (idle)"
         case .recording:  return "DailyStream (recording)"
         case .capturing:  return "DailyStream (capturing)"
+        case .flashing:   return "DailyStream (flash)"
         }
     }
 }

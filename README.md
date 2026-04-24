@@ -4,6 +4,7 @@ A minimal daily recording stream system for macOS. Capture screenshots and clipb
 
 ## Features
 
+- **Capture Mode Designer**: Mode → Preset → Attachment three-layer architecture.  Build your own capture recipes from predefined atomic Attachments (burst / interval / hide-cursor / auto-OCR / …), bind them to hotkeys, and switch whole Modes with one click.  See `docs/capture_mode_designer.md`.
 - **Global hotkeys**: `Ctrl+Shift+S` for screenshot, `Ctrl+Shift+V` for clipboard capture
 - **Menu bar app**: Always-on tray app with workspace/pipeline management
 - **Pipeline organization**: Group recordings by topic/theme
