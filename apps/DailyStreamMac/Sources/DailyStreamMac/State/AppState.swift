@@ -195,21 +195,10 @@ public final class AppState: ObservableObject {
 
     // MARK: - Capture actions
 
-    /// Drag-to-select a screen region and return the coordinates
-    /// without actually saving a screenshot.  Used by Create Preset.
+    /// Drag-to-select a screen region using the native Swift overlay.
+    /// Returns the region string "x,y,w,h" or nil on cancel.
     public func selectRegion() async -> String? {
-        struct Result: Decodable { let region: String }
-        do {
-            let r: Result = try await bridge.call(
-                "capture.select_region", params: RPCEmptyParams()
-            )
-            return r.region
-        } catch BridgeError.rpcFailed(let err) where err.code == -32001 {
-            return nil  // silent cancel
-        } catch {
-            showToast(title: "Region select failed", subtitle: "\(error)")
-            return nil
-        }
+        return await CaptureOverlay.selectRegion()
     }
 
     public func refreshPresets() async {
