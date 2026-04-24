@@ -20,12 +20,23 @@ public struct MenuBarContent: View {
             if !state.workspace.isActive {
                 Button("New Workspace…") { Task { await promptNewWorkspace() } }
                 Button("Open Workspace…") { Task { await promptOpenWorkspace() } }
+                if state.lastWorkspacePath != nil {
+                    Button("Reopen Last Workspace") {
+                        Task { await state.reopenLastWorkspace() }
+                    }
+                }
             } else {
                 Button("New Pipeline…") { Task { await promptNewPipeline() } }
                 if state.workspace.pipelines.count > 1 {
                     pipelineSwitcher
                 }
                 Divider()
+                Button("View Stream…") {
+                    Task { await state.showStreamViewer() }
+                }
+                Button("Open in Editor…") {
+                    Task { await state.openStreamInEditor() }
+                }
                 Button("Daily Review…") {
                     Task { await state.showDailyReview() }
                 }
@@ -50,7 +61,6 @@ public struct MenuBarContent: View {
                         Button(presetLabel(preset)) {
                             Task {
                                 await state.takeScreenshot(
-                                    mode: "interactive",
                                     region: preset.region,
                                     presetName: preset.name
                                 )

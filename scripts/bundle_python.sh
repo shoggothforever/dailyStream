@@ -88,39 +88,45 @@ if [[ -d "${FRAMEWORK_DIR}" ]]; then
         echo "▶ removing existing framework (--force)"
         rm -rf "${FRAMEWORK_DIR}"
     else
-        echo "▶ framework already exists; use --force to rebuild"
-        exit 0
+        echo "▶ framework exists; skipping extract (will re-install dailystream)"
     fi
 fi
 
-TMP_EXTRACT="${CACHE_DIR}/extract-$$"
-mkdir -p "${TMP_EXTRACT}"
-echo "▶ extracting"
-tar -xzf "${CACHED_TAR}" -C "${TMP_EXTRACT}"
+# Only extract if framework doesn't exist (fresh install or --force)
+if [[ ! -d "${FRAMEWORK_DIR}" ]]; then
+    TMP_EXTRACT="${CACHE_DIR}/extract-$$"
+    mkdir -p "${TMP_EXTRACT}"
+    echo "▶ extracting"
+    tar -xzf "${CACHED_TAR}" -C "${TMP_EXTRACT}"
 
-# PBS install_only layout: <root>/python/{bin,lib,include,share}
-PYROOT="${TMP_EXTRACT}/python"
-if [[ ! -d "${PYROOT}" ]]; then
-    echo "Unexpected tarball layout: ${PYROOT} not found" >&2
-    exit 1
+    # PBS install_only layout: <root>/python/{bin,lib,include,share}
+    PYROOT="${TMP_EXTRACT}/python"
+    if [[ ! -d "${PYROOT}" ]]; then
+        echo "Unexpected tarball layout: ${PYROOT} not found" >&2
+        exit 1
+    fi
+
+    # Lay out as a .framework so Swift can reference it via @rpath /
+    # @executable_path/../Frameworks/Python.framework/Versions/3.x/bin/python3
+    VERSION_MAJOR_MINOR="$(basename "${PYROOT}/lib/python"*)"
+    VERSION_MAJOR_MINOR="${VERSION_MAJOR_MINOR#python}"
+
+    FRAMEWORK_VER_DIR="${FRAMEWORK_DIR}/Versions/${VERSION_MAJOR_MINOR}"
+    mkdir -p "${FRAMEWORK_VER_DIR}"
+    cp -R "${PYROOT}/bin" "${FRAMEWORK_VER_DIR}/bin"
+    cp -R "${PYROOT}/lib" "${FRAMEWORK_VER_DIR}/lib"
+    cp -R "${PYROOT}/include" "${FRAMEWORK_VER_DIR}/include" || true
+    cp -R "${PYROOT}/share"   "${FRAMEWORK_VER_DIR}/share"   || true
+
+    # Convenient top-level symlink (Apple convention)
+    ln -sfn "Versions/${VERSION_MAJOR_MINOR}" "${FRAMEWORK_DIR}/Current" || true
+
+    rm -rf "${TMP_EXTRACT}"
 fi
 
-# Lay out as a .framework so Swift can reference it via @rpath /
-# @executable_path/../Frameworks/Python.framework/Versions/3.x/bin/python3
-VERSION_MAJOR_MINOR="$(basename "${PYROOT}/lib/python"*)"
-VERSION_MAJOR_MINOR="${VERSION_MAJOR_MINOR#python}"
-
+# Resolve version dir for existing or freshly extracted framework
+VERSION_MAJOR_MINOR="$(ls "${FRAMEWORK_DIR}/Versions" | grep -v Current | head -1)"
 FRAMEWORK_VER_DIR="${FRAMEWORK_DIR}/Versions/${VERSION_MAJOR_MINOR}"
-mkdir -p "${FRAMEWORK_VER_DIR}"
-cp -R "${PYROOT}/bin" "${FRAMEWORK_VER_DIR}/bin"
-cp -R "${PYROOT}/lib" "${FRAMEWORK_VER_DIR}/lib"
-cp -R "${PYROOT}/include" "${FRAMEWORK_VER_DIR}/include" || true
-cp -R "${PYROOT}/share"   "${FRAMEWORK_VER_DIR}/share"   || true
-
-# Convenient top-level symlink (Apple convention)
-ln -sfn "Versions/${VERSION_MAJOR_MINOR}" "${FRAMEWORK_DIR}/Current" || true
-
-rm -rf "${TMP_EXTRACT}"
 
 PY_BIN="${FRAMEWORK_VER_DIR}/bin/python3"
 if [[ ! -x "${PY_BIN}" ]]; then
@@ -131,8 +137,8 @@ fi
 # --- install dailystream into bundle -----------------------------------------
 echo "▶ installing dailystream (+ai extras) into bundle"
 "${PY_BIN}" -m pip install --upgrade --quiet pip
-# Editable install from repo root so later changes auto-reflect.
-# Use --no-deps + explicit deps install to keep layer tidy.
+# Always reinstall so Python source changes are picked up without --force.
+"${PY_BIN}" -m pip install --quiet --force-reinstall --no-deps "${REPO_ROOT}"
 "${PY_BIN}" -m pip install --quiet "${REPO_ROOT}[ai]"
 
 # --- smoke tests -------------------------------------------------------------

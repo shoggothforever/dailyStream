@@ -25,6 +25,11 @@ let package = Package(
             url: "https://github.com/sindresorhus/KeyboardShortcuts",
             from: "2.0.0"
         ),
+        // Markdown rendering in SwiftUI (pure Swift, no WebView).
+        .package(
+            url: "https://github.com/gonzalezreal/swift-markdown-ui",
+            from: "2.4.0"
+        ),
     ],
     targets: [
         .target(
@@ -36,6 +41,7 @@ let package = Package(
             dependencies: [
                 "DailyStreamCore",
                 "KeyboardShortcuts",
+                .product(name: "MarkdownUI", package: "swift-markdown-ui"),
             ],
             path: "Sources/DailyStreamMac",
             resources: []

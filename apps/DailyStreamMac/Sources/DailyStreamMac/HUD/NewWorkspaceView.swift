@@ -27,9 +27,6 @@ struct NewWorkspaceView: View {
     @State private var title: String = ""
     @State private var folder: URL? = nil
     @State private var aiMode: String = "off"
-    @FocusState private var focusedField: Field?
-
-    enum Field { case title }
 
     var body: some View {
         HUDFrame {
@@ -55,7 +52,6 @@ struct NewWorkspaceView: View {
                     placeholder: "Workspace title (optional)",
                     onSubmit: submit
                 )
-                .focused($focusedField, equals: .title)
 
                 // Folder row
                 HStack(spacing: 8) {
@@ -96,7 +92,6 @@ struct NewWorkspaceView: View {
                 }
             }
         }
-        .onAppear { focusedField = .title }
     }
 
     // MARK: - Helpers

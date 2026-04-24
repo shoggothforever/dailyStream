@@ -34,7 +34,7 @@ public final class HotkeyManager {
     public func install() {
         KeyboardShortcuts.onKeyDown(for: .screenshot) { [weak state] in
             guard let state else { return }
-            Task { await state.takeScreenshot(mode: "interactive") }
+            Task { await state.takeScreenshot() }
         }
         KeyboardShortcuts.onKeyDown(for: .clipboardCapture) { [weak state] in
             guard let state else { return }

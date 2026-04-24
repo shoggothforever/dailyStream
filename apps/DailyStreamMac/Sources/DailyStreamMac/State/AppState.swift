@@ -41,7 +41,10 @@ public final class AppState: ObservableObject {
     @Published public private(set) var lastError: String? = nil
     @Published public private(set) var toastMessage: ToastMessage? = nil
     @Published public private(set) var aiDefaultMode: String = "off"
+    @Published public private(set) var screenshotMode: String = "interactive"
     @Published public private(set) var presets: [ScreenshotPreset] = []
+    /// Remembers the last workspace dir so the user can quickly reopen it.
+    @Published public private(set) var lastWorkspacePath: String? = nil
 
     // MARK: - Dependencies
 
@@ -60,7 +63,9 @@ public final class AppState: ObservableObject {
             coreReady = true
             await refreshStatus()
             await refreshAiDefaultMode()
+            await refreshScreenshotMode()
             await refreshPresets()
+            await refreshLastWorkspacePath()
             Task { await self.listenForEvents() }
         } catch {
             coreReady = false
@@ -111,6 +116,37 @@ public final class AppState: ObservableObject {
         }
     }
 
+    public func refreshScreenshotMode() async {
+        struct Result: Decodable { let key: String; let value: String }
+        struct Params: Encodable, Sendable { let key: String }
+        do {
+            let r: Result = try await bridge.call(
+                "config.get", params: Params(key: "screenshot_mode")
+            )
+            screenshotMode = r.value
+        } catch {
+            screenshotMode = "interactive"
+        }
+    }
+
+    /// Populate lastWorkspacePath from the most recent workspace on disk.
+    private func refreshLastWorkspacePath() async {
+        // Skip if we already have an active workspace or a remembered path
+        if workspace.isActive || lastWorkspacePath != nil { return }
+        struct RecentItem: Decodable {
+            let workspace_path: String
+        }
+        struct Params: Encodable, Sendable { let limit: Int }
+        do {
+            let items: [RecentItem] = try await bridge.call(
+                "workspace.list_recent", params: Params(limit: 1)
+            )
+            if let first = items.first {
+                lastWorkspacePath = first.workspace_path
+            }
+        } catch {}
+    }
+
     /// Create a new workspace via `workspace.create`.
     public func createWorkspace(_ values: NewWorkspaceValues) async {
         struct Params: Encodable, Sendable {
@@ -146,12 +182,16 @@ public final class AppState: ObservableObject {
     public func endWorkspace() async {
         struct Result: Decodable { let timeline_report: String? }
         do {
+            // Remember the workspace path for quick reopen.
+            let wsPath = await workspaceDirPath()
+
             // Grab structured data BEFORE ending (workspace is still active).
             let reviewData = try? await fetchReviewData()
 
             let r: Result = try await bridge.call(
                 "workspace.end", params: RPCEmptyParams()
             )
+            lastWorkspacePath = wsPath
             await refreshStatus()
             if let report = r.timeline_report {
                 showToast(title: "Workspace ended", subtitle: report)
@@ -166,6 +206,15 @@ public final class AppState: ObservableObject {
         } catch {
             showToast(title: "End failed", subtitle: "\(error)")
         }
+    }
+
+    /// Quickly reopen the last ended workspace (same directory).
+    public func reopenLastWorkspace() async {
+        guard let path = lastWorkspacePath else {
+            showToast(title: "No recent workspace")
+            return
+        }
+        await openWorkspaceAt(URL(fileURLWithPath: path))
     }
 
     /// Fetch structured timeline data for the Daily Review window.
@@ -190,37 +239,78 @@ public final class AppState: ObservableObject {
         }
     }
 
+    /// Open the native Markdown stream viewer for the current workspace.
+    public func showStreamViewer() async {
+        guard let path = await workspaceDirPath() else {
+            showToast(title: "No active workspace")
+            return
+        }
+        StreamViewerWindow.shared.show(workspacePath: path)
+    }
+
+    /// Open stream.md in the user's preferred editor (VS Code / default).
+    public func openStreamInEditor() async {
+        guard let path = await workspaceDirPath() else {
+            showToast(title: "No active workspace")
+            return
+        }
+        let vm = StreamViewerViewModel(workspacePath: path)
+        vm.openInEditor()
+    }
+
+    /// Fetch the workspace_dir from the core.
+    private func workspaceDirPath() async -> String? {
+        struct Status: Decodable {
+            let is_active: Bool
+            let workspace_dir: String?
+        }
+        do {
+            let s: Status = try await bridge.call(
+                "workspace.status", params: RPCEmptyParams()
+            )
+            return s.is_active ? s.workspace_dir : nil
+        } catch {
+            return nil
+        }
+    }
+
     /// Open an existing workspace directory.  Mirrors
     /// `_on_open_workspace` logic: if the chosen folder is itself a
     /// workspace, open it directly; otherwise look for the most recent
     /// sub-folder containing a `workspace_meta.json`.
     public func openWorkspaceAt(_ folder: URL) async {
-        struct Params: Encodable, Sendable { let path: String }
+        struct Params: Encodable, Sendable { let path: String; let force: Bool }
+
+        // First attempt: open the folder directly (force-end any active ws).
         do {
             let _: WorkspaceSummaryDTO = try await bridge.call(
-                "workspace.open", params: Params(path: folder.path)
+                "workspace.open", params: Params(path: folder.path, force: true)
             )
             await refreshStatus()
             showToast(title: "Workspace opened",
                       subtitle: workspace.title ?? folder.lastPathComponent)
+            return
         } catch {
-            // Fall back: scan immediate sub-directories and try the
-            // most recent one.
-            if let latest = mostRecentWorkspaceChild(of: folder) {
-                do {
-                    let _: WorkspaceSummaryDTO = try await bridge.call(
-                        "workspace.open", params: Params(path: latest.path)
-                    )
-                    await refreshStatus()
-                    showToast(title: "Workspace opened",
-                              subtitle: workspace.title ?? latest.lastPathComponent)
-                    return
-                } catch {
-                    showToast(title: "Open failed", subtitle: "\(error)")
-                    return
-                }
-            }
-            showToast(title: "Open failed", subtitle: "No workspace_meta.json found")
+            // Likely NotFound — the chosen folder isn't a workspace
+            // directory.  Fall through to directory scanning below.
+        }
+
+        // Second attempt: scan child directories (1–2 levels deep)
+        // for the most recently modified workspace.
+        guard let latest = mostRecentWorkspaceChild(of: folder) else {
+            showToast(title: "Open failed",
+                      subtitle: "No workspace found in \(folder.lastPathComponent)")
+            return
+        }
+        do {
+            let _: WorkspaceSummaryDTO = try await bridge.call(
+                "workspace.open", params: Params(path: latest.path, force: true)
+            )
+            await refreshStatus()
+            showToast(title: "Workspace opened",
+                      subtitle: workspace.title ?? latest.lastPathComponent)
+        } catch {
+            showToast(title: "Open failed", subtitle: "\(error)")
         }
     }
 
@@ -438,7 +528,7 @@ public final class AppState: ObservableObject {
     /// * on success → ask for a description via HUD;
     /// * description HUD cancelled → **delete** the screenshot file;
     /// * description HUD saved → call `feed.image`, emit success toast.
-    public func takeScreenshot(mode: String = "interactive",
+    public func takeScreenshot(mode: String? = nil,
                                region: String? = nil,
                                presetName: String? = nil) async {
         guard workspace.isActive,
@@ -447,6 +537,9 @@ public final class AppState: ObservableObject {
                       subtitle: "Create and activate one first.")
             return
         }
+
+        // Use the configured screenshot_mode unless explicitly overridden.
+        let effectiveMode = mode ?? screenshotMode
 
         iconState = .capturing
         defer { Task { await self.refreshStatus() } }
@@ -461,7 +554,7 @@ public final class AppState: ObservableObject {
         do {
             capture = try await bridge.call(
                 "capture.screenshot",
-                params: CaptureParams(mode: mode, region: region)
+                params: CaptureParams(mode: effectiveMode, region: region)
             )
         } catch BridgeError.rpcFailed(let err) where err.code == -32001 {
             // The Python side raises StateConflict with this code when
@@ -549,17 +642,48 @@ public final class AppState: ObservableObject {
 
     // MARK: - Internal helpers
 
+    /// Scan for the most recently modified workspace directory inside
+    /// ``folder``.  Supports both direct children and the standard
+    /// two-level layout ``<root>/<yymmdd>/<name>/workspace_meta.json``.
     private func mostRecentWorkspaceChild(of folder: URL) -> URL? {
         let fm = FileManager.default
         guard let children = try? fm.contentsOfDirectory(
             at: folder, includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ) else { return nil }
-        let candidates = children.filter { url in
+
+        var candidates: [URL] = []
+
+        for child in children {
             var isDir: ObjCBool = false
-            let exists = fm.fileExists(atPath: url.appendingPathComponent("workspace_meta.json").path, isDirectory: &isDir)
-            return exists && !isDir.boolValue
+            guard fm.fileExists(atPath: child.path, isDirectory: &isDir),
+                  isDir.boolValue else { continue }
+
+            // Level 1: child itself has workspace_meta.json
+            let metaL1 = child.appendingPathComponent("workspace_meta.json")
+            if fm.fileExists(atPath: metaL1.path) {
+                candidates.append(child)
+                continue
+            }
+
+            // Level 2: child is a date-folder (e.g. 260404) containing
+            // workspace sub-dirs with workspace_meta.json.
+            if let grandchildren = try? fm.contentsOfDirectory(
+                at: child, includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            ) {
+                for gc in grandchildren {
+                    var gcIsDir: ObjCBool = false
+                    guard fm.fileExists(atPath: gc.path, isDirectory: &gcIsDir),
+                          gcIsDir.boolValue else { continue }
+                    let metaL2 = gc.appendingPathComponent("workspace_meta.json")
+                    if fm.fileExists(atPath: metaL2.path) {
+                        candidates.append(gc)
+                    }
+                }
+            }
         }
+
         return candidates.sorted { (a, b) in
             let ad = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
             let bd = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast

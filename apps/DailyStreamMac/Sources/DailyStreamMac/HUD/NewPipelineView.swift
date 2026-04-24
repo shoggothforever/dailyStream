@@ -23,9 +23,6 @@ struct NewPipelineView: View {
     @State private var name: String = ""
     @State private var description: String = ""
     @State private var goal: String = ""
-    @FocusState private var focusedField: Field?
-
-    enum Field { case name, description, goal }
 
     var body: some View {
         HUDFrame {
@@ -49,28 +46,26 @@ struct NewPipelineView: View {
                     placeholder: "Name (required)",
                     onSubmit: submit
                 )
-                .focused($focusedField, equals: .name)
 
                 HUDTextField(
                     text: $description,
                     placeholder: "Description (optional)",
+                    singleLine: false,
                     onSubmit: submit
                 )
-                .focused($focusedField, equals: .description)
 
                 HUDTextField(
                     text: $goal,
                     placeholder: "Goal (optional)",
+                    singleLine: false,
                     onSubmit: submit
                 )
-                .focused($focusedField, equals: .goal)
 
                 Divider().opacity(0.3)
 
                 HUDHintBar(left: "⇥ next field", right: "⎋ Cancel  ↩ Create")
             }
         }
-        .onAppear { focusedField = .name }
     }
 
     private func submit() {

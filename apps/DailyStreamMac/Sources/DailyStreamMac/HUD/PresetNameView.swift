@@ -25,9 +25,6 @@ struct PresetNameView: View {
 
     @State private var name: String = ""
     @State private var hotkey: String = ""
-    @FocusState private var focusedField: Field?
-
-    enum Field { case name, hotkey }
 
     var body: some View {
         HUDFrame {
@@ -51,21 +48,18 @@ struct PresetNameView: View {
                     placeholder: "Name (required)",
                     onSubmit: submit
                 )
-                .focused($focusedField, equals: .name)
 
                 HUDTextField(
                     text: $hotkey,
                     placeholder: "Hotkey (optional, e.g. <cmd>+3)",
                     onSubmit: submit
                 )
-                .focused($focusedField, equals: .hotkey)
 
                 Divider().opacity(0.3)
 
                 HUDHintBar(left: nil, right: "⎋ Cancel  ↩ Save")
             }
         }
-        .onAppear { focusedField = .name }
     }
 
     private func submit() {

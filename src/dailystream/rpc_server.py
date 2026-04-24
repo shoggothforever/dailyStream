@@ -246,15 +246,30 @@ def _register_workspace_methods(d: Dispatcher, state: _ServerState) -> None:
         }
 
     @d.method("workspace.open")
-    def _open(path: str) -> dict:
+    def _open(path: str, force: bool = False) -> dict:
         if state.wm.is_active:
-            raise StateConflict("Workspace already active")
+            if force:
+                # Auto-end the current workspace before opening a new one.
+                state.wm.end(config=state.config,
+                             analysis_queue=state.analysis_queue)
+                state.shutdown_analysis_queue()
+                d.event_bus.publish("workspace.changed", {"is_active": False})
+            else:
+                raise StateConflict(
+                    "Workspace already active",
+                    data={"workspace_dir": str(state.wm.workspace_dir)},
+                )
         target = Path(path)
         # Accept either the workspace dir itself or a parent containing it
         if not (target / "workspace_meta.json").exists():
             raise NotFound(f"No workspace_meta.json in {target}")
         if not state.wm.load(target):
             raise NotFound(f"Failed to load workspace from {target}")
+        # Re-activate the workspace (it may have been ended previously).
+        # This mirrors the old rumps behaviour in app.py _on_open_workspace.
+        if state.wm.meta and state.wm.meta.ended_at is not None:
+            state.wm.meta.ended_at = None
+            state.wm.save_meta()
         set_active_workspace_path(target)
         state._refresh_pipeline_manager()
         if state.wm.meta and getattr(state.wm.meta, "ai_mode", "off") == "realtime":

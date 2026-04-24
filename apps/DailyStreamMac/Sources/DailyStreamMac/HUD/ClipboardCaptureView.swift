@@ -28,7 +28,6 @@ struct ClipboardCaptureView: View {
     let onClose: (ClipboardCaptureResult) -> Void
 
     @State private var text: String = ""
-    @FocusState private var focused: Bool
 
     private var preview: String {
         if content.count > 80 {
@@ -55,10 +54,7 @@ struct ClipboardCaptureView: View {
                 }
 
                 if kind == "image", let thumbnailURL {
-                    ThumbnailImageView(url: thumbnailURL)
-                        .frame(height: 110)
-                        .clipShape(RoundedRectangle(cornerRadius: 10,
-                                                    style: .continuous))
+                    ClipboardThumbnail(url: thumbnailURL)
                 } else {
                     Text(preview)
                         .font(DSFont.mono)
@@ -75,16 +71,15 @@ struct ClipboardCaptureView: View {
                 HUDTextField(
                     text: $text,
                     placeholder: "Description (optional)",
+                    singleLine: false,
                     onSubmit: { onClose(.save(trimmed)) }
                 )
-                .focused($focused)
 
                 Divider().opacity(0.3)
 
-                HUDHintBar(left: nil, right: "⎋ Discard  ↩ Save")
+                HUDHintBar(left: nil, right: "⎋ Discard  ⇧↩ Newline  ↩ Save")
             }
         }
-        .onAppear { focused = true }
     }
 
     private var trimmed: String {
@@ -100,18 +95,23 @@ struct ClipboardCaptureView: View {
     }
 }
 
-/// Small wrapper — duplicated from ScreenshotDescView so each HUD
-/// source file is self-contained.
-private struct ThumbnailImageView: NSViewRepresentable {
+private struct ClipboardThumbnail: View {
     let url: URL
-    func makeNSView(context: Context) -> NSImageView {
-        let v = NSImageView()
-        v.imageScaling = .scaleProportionallyUpOrDown
-        v.imageFrameStyle = .none
-        v.image = NSImage(contentsOf: url)
-        return v
-    }
-    func updateNSView(_ v: NSImageView, context: Context) {
-        v.image = NSImage(contentsOf: url)
+    var body: some View {
+        if let nsImage = NSImage(contentsOf: url) {
+            Image(nsImage: nsImage)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: 200)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        } else {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.secondary.opacity(0.1))
+                .frame(height: 60)
+                .overlay {
+                    Image(systemName: "photo")
+                        .foregroundStyle(.secondary)
+                }
+        }
     }
 }

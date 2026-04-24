@@ -27,7 +27,6 @@ struct ScreenshotDescView: View {
     let onClose: (ScreenshotDescResult) -> Void
 
     @State private var text: String = ""
-    @FocusState private var focused: Bool
 
     var body: some View {
         HUDFrame {
@@ -36,28 +35,27 @@ struct ScreenshotDescView: View {
 
                 if let thumbnailURL {
                     ThumbnailView(url: thumbnailURL)
-                        .frame(height: 110)
-                        .frame(maxWidth: .infinity)
+                        .frame(maxWidth: .infinity, maxHeight: 200)
                         .clipShape(RoundedRectangle(cornerRadius: 10,
                                                     style: .continuous))
+                        .clipped()
                 }
 
                 HUDTextField(
                     text: $text,
-                    placeholder: "Description (optional) — ↩ to save",
+                    placeholder: "Description (optional)",
+                    singleLine: false,
                     onSubmit: submit
                 )
-                .focused($focused)
 
                 Divider().opacity(0.3)
 
                 HUDHintBar(
                     left: presetName.map { "preset · \($0)" },
-                    right: "⎋ Discard  ↩ Save"
+                    right: "⎋ Discard  ⇧↩ Newline  ↩ Save"
                 )
             }
         }
-        .onAppear { focused = true }
     }
 
     // MARK: - Subviews
@@ -85,23 +83,25 @@ struct ScreenshotDescView: View {
     }
 }
 
-/// Simple NSImageView-backed thumbnail loader — avoids SwiftUI's
-/// async image load overhead for local files.
-private struct ThumbnailView: NSViewRepresentable {
+/// Screenshot thumbnail that fits within the HUD width and a max height.
+private struct ThumbnailView: View {
     let url: URL
 
-    func makeNSView(context: Context) -> NSImageView {
-        let v = NSImageView()
-        v.imageScaling = .scaleProportionallyUpOrDown
-        v.imageFrameStyle = .none
-        v.wantsLayer = true
-        v.layer?.cornerRadius = 10
-        v.layer?.masksToBounds = true
-        v.image = NSImage(contentsOf: url)
-        return v
-    }
-
-    func updateNSView(_ v: NSImageView, context: Context) {
-        v.image = NSImage(contentsOf: url)
+    var body: some View {
+        if let nsImage = NSImage(contentsOf: url) {
+            Image(nsImage: nsImage)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: 200)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        } else {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.secondary.opacity(0.1))
+                .frame(height: 60)
+                .overlay {
+                    Image(systemName: "photo")
+                        .foregroundStyle(.secondary)
+                }
+        }
     }
 }

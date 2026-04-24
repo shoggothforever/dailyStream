@@ -75,11 +75,12 @@ class TestWorkspaceLifecycle:
         # No entries → timeline_report will be None; still succeeds.
         assert "timeline_report" in r["result"]
 
-        # Re-open — the workspace has already been ended, so is_active is
-        # False but the metadata must still load cleanly.
+        # Re-open — the workspace has already been ended; open must
+        # re-activate it (clear ended_at) just like the old rumps flow.
         r = d.handle(_rpc("workspace.open", {"path": ws_dir}))
         assert r["result"]["title"] == "test-ws"
-        assert r["result"]["ended_at"] is not None
+        assert r["result"]["ended_at"] is None
+        assert r["result"]["is_active"] is True
 
     def test_create_fails_when_already_active(self, tmp_config_dir, tmp_path):
         d, _, _ = build_dispatcher()

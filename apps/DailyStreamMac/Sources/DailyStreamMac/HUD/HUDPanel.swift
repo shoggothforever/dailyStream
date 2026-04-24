@@ -45,10 +45,10 @@ final class HUDController {
     private let hostingController: NSHostingController<AnyView>
     private let placement: HUDPlacement
 
-    /// Key-event monitor installed while the panel is on-screen.  We
-    /// forward Esc / Enter into a supplied callback so SwiftUI views
-    /// don't need to care about NSEvent plumbing.
+    /// Key-event monitor installed while the panel is on-screen.
     private var keyMonitor: Any?
+    /// KVO observation for content size changes.
+    private var sizeObservation: NSKeyValueObservation?
 
     init(placement: HUDPlacement,
          width: CGFloat = HUDConstants.defaultWidth) {
@@ -92,11 +92,56 @@ final class HUDController {
         panel.orderFrontRegardless()
         panel.makeKeyAndOrderFront(nil)
         installKeyMonitor(onKeyDown: onKeyDown)
+        startObservingSize()
     }
 
     func hide() {
+        stopObservingSize()
         removeKeyMonitor()
         panel.orderOut(nil)
+    }
+
+    // MARK: - Dynamic size tracking
+
+    /// Observe the hosting view's intrinsicContentSize changes so the
+    /// panel grows/shrinks as the SwiftUI content changes (e.g. multi-line
+    /// text fields expanding).
+    private func startObservingSize() {
+        stopObservingSize()
+        sizeObservation = hostingController.view.observe(
+            \.frame, options: [.new]
+        ) { [weak self] _, _ in
+            Task { @MainActor in
+                self?.updatePanelSize()
+            }
+        }
+    }
+
+    private func stopObservingSize() {
+        sizeObservation?.invalidate()
+        sizeObservation = nil
+    }
+
+    private func updatePanelSize() {
+        hostingController.view.layoutSubtreeIfNeeded()
+        let fit = hostingController.view.fittingSize
+        let width = max(fit.width, HUDConstants.defaultWidth)
+        let height = max(fit.height, 100)
+        let currentSize = panel.frame.size
+        // Only resize if height actually changed (avoid infinite loops)
+        if abs(currentSize.height - height) > 1 {
+            // Preserve the panel's top edge (grow downward)
+            let oldFrame = panel.frame
+            let newOrigin = NSPoint(
+                x: oldFrame.origin.x,
+                y: oldFrame.origin.y + oldFrame.height - height
+            )
+            panel.setFrame(
+                NSRect(origin: newOrigin, size: NSSize(width: width, height: height)),
+                display: true,
+                animate: false
+            )
+        }
     }
 
     // MARK: - Positioning
