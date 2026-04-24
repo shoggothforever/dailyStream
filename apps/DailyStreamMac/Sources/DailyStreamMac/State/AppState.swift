@@ -201,7 +201,7 @@ public final class AppState: ObservableObject {
 
             // Show Daily Review window if we got data.
             if let data = reviewData {
-                DailyReviewWindow.shared.show(data: data)
+                DailyReviewWindow.shared.show(data: data, bridge: bridge)
             }
         } catch {
             showToast(title: "End failed", subtitle: "\(error)")
@@ -230,7 +230,7 @@ public final class AppState: ObservableObject {
     public func showDailyReview() async {
         do {
             if let data = try await fetchReviewData() {
-                DailyReviewWindow.shared.show(data: data)
+                DailyReviewWindow.shared.show(data: data, bridge: bridge)
             } else {
                 showToast(title: "No entries to review")
             }

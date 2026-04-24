@@ -548,6 +548,97 @@ def _register_feed_methods(d: Dispatcher, state: _ServerState) -> None:
             raise NotFound(f"Image not found: {path}")
         return _do_feed("image", path, description, pipeline)
 
+    def _require_workspace_loaded() -> None:
+        """Like _require_active_workspace but allows ended workspaces.
+        The edit/delete operations work on disk files and don't need
+        the workspace to be "active" (ended_at == None).
+        """
+        if state.wm.workspace_dir is None or state.pm is None:
+            raise StateConflict("No workspace loaded")
+
+    @d.method("feed.delete")
+    def _delete(pipeline: str, entry_index: int,
+                delete_file: bool = False) -> dict:
+        """Delete an entry from a pipeline and regenerate stream.md."""
+        _require_workspace_loaded()
+
+        removed = state.pm.delete_entry(pipeline, entry_index)
+        if removed is None:
+            raise NotFound(f"Entry {entry_index} not found in {pipeline}")
+
+        # Optionally delete the screenshot file
+        if delete_file and removed.get("input_type") == "image":
+            img_path = Path(removed.get("input_content", ""))
+            if img_path.exists():
+                try:
+                    img_path.unlink()
+                except Exception:  # noqa: BLE001
+                    logger.warning("Failed to delete image: %s", img_path)
+
+        # Regenerate stream.md from scratch
+        _regenerate_stream_md(state)
+
+        d.event_bus.publish("feed.entry_deleted", {
+            "pipeline": pipeline,
+            "entry_index": entry_index,
+        })
+        return {"deleted": True, "pipeline": pipeline,
+                "entry_index": entry_index}
+
+    @d.method("feed.update")
+    def _update(pipeline: str, entry_index: int,
+                description: str) -> dict:
+        """Update an entry's description and regenerate stream.md."""
+        _require_workspace_loaded()
+
+        updated = state.pm.update_entry(pipeline, entry_index, description)
+        if updated is None:
+            raise NotFound(f"Entry {entry_index} not found in {pipeline}")
+
+        # Regenerate stream.md
+        _regenerate_stream_md(state)
+
+        d.event_bus.publish("feed.entry_updated", {
+            "pipeline": pipeline,
+            "entry_index": entry_index,
+            "entry": updated,
+        })
+        return {"updated": True, "entry": updated}
+
+
+def _regenerate_stream_md(state: _ServerState) -> None:
+    """Rebuild stream.md from all pipeline entries."""
+    from .note_sync import LocalMarkdownSyncer
+
+    assert state.wm.workspace_dir is not None
+    assert state.wm.meta is not None
+    assert state.pm is not None
+
+    ws_title = state.wm.meta.title or state.wm.meta.workspace_id
+    md_path = state.wm.workspace_dir / "stream.md"
+
+    syncer = LocalMarkdownSyncer(state.wm.workspace_dir, state.config)
+    # Delete and rebuild
+    if md_path.exists():
+        md_path.unlink()
+
+    for pname in state.pm.list_pipelines():
+        pmeta = state.pm.get_pipeline_meta(pname)
+        for entry in state.pm.get_entries(pname):
+            image_path = None
+            if entry.get("input_type") == "image":
+                image_path = entry.get("input_content")
+            syncer.sync_entry(
+                workspace_title=ws_title,
+                pipeline_name=pname,
+                timestamp=entry.get("timestamp", ""),
+                input_type=entry.get("input_type", ""),
+                description=entry.get("description", ""),
+                content=entry.get("input_content", ""),
+                image_path=image_path,
+                pipeline_meta=pmeta,
+            )
+
 
 def _register_timeline_methods(d: Dispatcher, state: _ServerState) -> None:
 

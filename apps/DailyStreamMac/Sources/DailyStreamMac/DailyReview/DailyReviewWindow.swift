@@ -15,8 +15,9 @@ final class DailyReviewWindow {
 
     private init() {}
 
-    func show(data: ReviewData) {
-        let content = DailyReviewContent(data: data) { [weak self] in
+    func show(data: ReviewData, bridge: CoreBridge) {
+        let vm = DailyReviewVM(data: data, bridge: bridge)
+        let content = DailyReviewContent(vm: vm) { [weak self] in
             self?.close()
         }
 
@@ -44,6 +45,103 @@ final class DailyReviewWindow {
 
     func close() {
         window?.orderOut(nil)
+    }
+}
+
+// MARK: - View model (mutable, supports edit/delete) --------------------
+
+@MainActor
+final class DailyReviewVM: ObservableObject {
+    @Published var data: ReviewData
+    @Published var editingEntry: ReviewData.Entry? = nil
+    @Published var editText: String = ""
+    let bridge: CoreBridge
+
+    init(data: ReviewData, bridge: CoreBridge) {
+        self.data = data
+        self.bridge = bridge
+    }
+
+    func deleteEntry(_ entry: ReviewData.Entry) async {
+        // Find the entry's pipeline-local index
+        let pipelineEntries = data.entries.filter { $0.pipeline == entry.pipeline }
+        guard let localIdx = pipelineEntries.firstIndex(where: { $0.id == entry.id }) else { return }
+
+        struct Params: Encodable, Sendable {
+            let pipeline: String
+            let entry_index: Int
+            let delete_file: Bool
+        }
+        struct Result: Decodable { let deleted: Bool }
+        do {
+            let _: Result = try await bridge.call(
+                "feed.delete",
+                params: Params(pipeline: entry.pipeline,
+                               entry_index: localIdx,
+                               delete_file: false)
+            )
+        } catch {
+            print("feed.delete failed: \(error)")
+            return
+        }
+        // Remove from local data — mutate the whole struct to trigger @Published
+        var updated = data
+        updated.entries.removeAll { $0.id == entry.id }
+        data = updated
+    }
+
+    func startEditing(_ entry: ReviewData.Entry) {
+        editingEntry = entry
+        editText = entry.description
+    }
+
+    func cancelEditing() {
+        editingEntry = nil
+        editText = ""
+    }
+
+    func saveEditing() async {
+        guard let entry = editingEntry else { return }
+        let pipelineEntries = data.entries.filter { $0.pipeline == entry.pipeline }
+        guard let localIdx = pipelineEntries.firstIndex(where: { $0.id == entry.id }) else { return }
+
+        struct Params: Encodable, Sendable {
+            let pipeline: String
+            let entry_index: Int
+            let description: String
+        }
+        struct Result: Decodable { let updated: Bool }
+        let newDesc = editText.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            let _: Result = try await bridge.call(
+                "feed.update",
+                params: Params(pipeline: entry.pipeline,
+                               entry_index: localIdx,
+                               description: newDesc)
+            )
+        } catch {
+            print("feed.update failed: \(error)")
+            editingEntry = nil
+            editText = ""
+            return
+        }
+        // Update local data — mutate the whole struct to trigger @Published
+        var updated = data
+        if let idx = updated.entries.firstIndex(where: { $0.id == entry.id }) {
+            updated.entries[idx] = ReviewData.Entry(
+                timestamp: entry.timestamp,
+                pipeline: entry.pipeline,
+                input_type: entry.input_type,
+                description: newDesc,
+                input_content: entry.input_content,
+                ai_description: entry.ai_description,
+                ai_category: entry.ai_category,
+                ai_elements: entry.ai_elements
+            )
+        }
+        data = updated
+        editingEntry = nil
+        editText = ""
     }
 }
 
@@ -96,7 +194,7 @@ struct ReviewData: Decodable, Sendable {
 
     let workspace: Workspace
     let stats: Stats?
-    let entries: [Entry]
+    var entries: [Entry]
     let pipeline_summaries: [PipelineSummary]?
     let daily_summary: DailySummary?
 }
@@ -104,8 +202,10 @@ struct ReviewData: Decodable, Sendable {
 // MARK: - SwiftUI view --------------------------------------------------
 
 struct DailyReviewContent: View {
-    let data: ReviewData
+    @ObservedObject var vm: DailyReviewVM
     let onClose: () -> Void
+
+    private var data: ReviewData { vm.data }
 
     var body: some View {
         ScrollView {
@@ -213,7 +313,7 @@ struct DailyReviewContent: View {
 
             // Card
             VStack(alignment: .leading, spacing: 6) {
-                // Type + pipeline label
+                // Type + pipeline label + action buttons
                 HStack(spacing: 4) {
                     Image(systemName: typeIcon(entry.input_type))
                         .foregroundStyle(.secondary)
@@ -221,10 +321,49 @@ struct DailyReviewContent: View {
                     Text(entry.pipeline)
                         .font(DSFont.caption)
                         .foregroundStyle(.secondary)
+                    Spacer()
+                    // Edit button
+                    Button {
+                        vm.startEditing(entry)
+                    } label: {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Edit description")
+                    // Delete button
+                    Button {
+                        Task { await vm.deleteEntry(entry) }
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Delete entry")
                 }
 
-                // Description (user-provided)
-                if !entry.description.isEmpty {
+                // Description — editable or static
+                if vm.editingEntry?.id == entry.id {
+                    // Inline edit mode
+                    VStack(alignment: .leading, spacing: 6) {
+                        TextField("Description", text: $vm.editText)
+                            .textFieldStyle(.roundedBorder)
+                            .font(DSFont.body)
+                        HStack(spacing: 8) {
+                            Button("Save") {
+                                Task { await vm.saveEditing() }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            Button("Cancel") {
+                                vm.cancelEditing()
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+                } else if !entry.description.isEmpty {
                     Text(entry.description)
                         .font(DSFont.body)
                 }

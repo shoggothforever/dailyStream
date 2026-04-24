@@ -137,6 +137,30 @@ class PipelineManager:
             entries[index]["synced"] = True
             write_json(ctx_path, ctx)
 
+    def delete_entry(self, pipeline_name: str, index: int) -> Optional[dict]:
+        """Delete an entry by index. Returns the deleted entry or None."""
+        ctx_path = self._context_path(pipeline_name)
+        ctx = read_json(ctx_path)
+        entries = ctx.get("entries", [])
+        if not (0 <= index < len(entries)):
+            return None
+        removed = entries.pop(index)
+        write_json(ctx_path, ctx)
+        return removed
+
+    def update_entry(
+        self, pipeline_name: str, index: int, description: str
+    ) -> Optional[dict]:
+        """Update an entry's description by index. Returns updated entry or None."""
+        ctx_path = self._context_path(pipeline_name)
+        ctx = read_json(ctx_path)
+        entries = ctx.get("entries", [])
+        if not (0 <= index < len(entries)):
+            return None
+        entries[index]["description"] = description
+        write_json(ctx_path, ctx)
+        return entries[index]
+
     def get_entries(self, pipeline_name: str) -> list[dict]:
         """Get all entries for a pipeline."""
         ctx = read_json(self._context_path(pipeline_name))
