@@ -34,12 +34,6 @@ public struct MenuBarContent: View {
                 Button("View Stream…") {
                     Task { await state.showStreamViewer() }
                 }
-                Button("Open in Editor…") {
-                    Task { await state.openStreamInEditor() }
-                }
-                Button("Daily Review…") {
-                    Task { await state.showDailyReview() }
-                }
                 Button("End Workspace") {
                     Task { await state.endWorkspace() }
                 }

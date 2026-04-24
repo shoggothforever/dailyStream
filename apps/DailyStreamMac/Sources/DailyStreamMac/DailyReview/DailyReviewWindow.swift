@@ -112,6 +112,7 @@ struct DailyReviewContent: View {
             VStack(alignment: .leading, spacing: 24) {
                 heroSection
                 statsStrip
+                pipelineSummariesSection
                 timelineSection
                 if let summary = data.daily_summary,
                    let overall = summary.overall_summary, !overall.isEmpty {
@@ -200,46 +201,107 @@ struct DailyReviewContent: View {
     private func entryRow(_ entry: ReviewData.Entry) -> some View {
         HStack(alignment: .top, spacing: 12) {
             // Timestamp tick
-            VStack {
-                Text(shortTime(entry.timestamp))
-                    .font(DSFont.mono)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 70, alignment: .trailing)
-            }
+            Text(shortTime(entry.timestamp))
+                .font(DSFont.mono)
+                .foregroundStyle(.secondary)
+                .frame(width: 70, alignment: .trailing)
+
             // Color bar for pipeline
             RoundedRectangle(cornerRadius: 2)
                 .fill(pipelineColor(entry.pipeline))
                 .frame(width: 4)
+
             // Card
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
+            VStack(alignment: .leading, spacing: 6) {
+                // Type + pipeline label
+                HStack(spacing: 4) {
                     Image(systemName: typeIcon(entry.input_type))
                         .foregroundStyle(.secondary)
+                        .font(.system(size: 12))
                     Text(entry.pipeline)
                         .font(DSFont.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                // Description (user-provided)
                 if !entry.description.isEmpty {
                     Text(entry.description)
                         .font(DSFont.body)
                 }
-                if let ai = entry.ai_description, !ai.isEmpty {
-                    Text(ai)
-                        .font(DSFont.caption)
-                        .foregroundStyle(.tertiary)
-                        .italic()
-                }
-                if entry.input_type == "image" {
-                    let url = URL(fileURLWithPath: entry.input_content)
-                    AsyncImage(url: url) { image in
-                        image.resizable()
+
+                // Type-specific content rendering
+                switch entry.input_type {
+                case "url":
+                    if let url = URL(string: entry.input_content) {
+                        Link(destination: url) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.up.right.square")
+                                    .font(.system(size: 11))
+                                Text(entry.input_content)
+                                    .font(DSFont.caption)
+                                    .lineLimit(2)
+                                    .truncationMode(.middle)
+                            }
+                            .foregroundStyle(DSColor.accent)
+                        }
+                    } else {
+                        Text(entry.input_content)
+                            .font(DSFont.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                case "text":
+                    if !entry.input_content.isEmpty,
+                       entry.input_content != entry.description {
+                        Text(entry.input_content.prefix(300))
+                            .font(DSFont.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(Color.secondary.opacity(0.06))
+                            )
+                    }
+
+                case "image":
+                    if let nsImage = NSImage(contentsOfFile: entry.input_content) {
+                        Image(nsImage: nsImage)
+                            .resizable()
                             .aspectRatio(contentMode: .fit)
-                            .frame(maxHeight: 120)
+                            .frame(maxHeight: 160)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
-                    } placeholder: {
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(.quaternary)
-                            .frame(height: 80)
+                    }
+
+                default:
+                    EmptyView()
+                }
+
+                // AI analysis
+                if let ai = entry.ai_description, !ai.isEmpty {
+                    HStack(alignment: .top, spacing: 4) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.purple)
+                        Text(ai)
+                            .font(DSFont.caption)
+                            .foregroundStyle(.tertiary)
+                            .italic()
+                    }
+                }
+
+                // AI elements tags
+                if let elements = entry.ai_elements, !elements.isEmpty {
+                    FlowLayout(spacing: 4) {
+                        ForEach(elements, id: \.self) { tag in
+                            Text(tag)
+                                .font(.system(size: 10))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(
+                                    Capsule().fill(Color.secondary.opacity(0.1))
+                                )
+                        }
                     }
                 }
             }
@@ -252,6 +314,50 @@ struct DailyReviewContent: View {
             )
         }
         .padding(.vertical, 2)
+    }
+
+    // MARK: - Pipeline summaries
+
+    @ViewBuilder
+    private var pipelineSummariesSection: some View {
+        if let summaries = data.pipeline_summaries, !summaries.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Pipelines")
+                    .font(.system(size: 20, weight: .semibold))
+                ForEach(summaries, id: \.name) { ps in
+                    HStack(alignment: .top, spacing: 10) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(pipelineColor(ps.name))
+                            .frame(width: 4, height: 40)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Text(ps.name)
+                                    .font(.system(size: 14, weight: .medium))
+                                Spacer()
+                                Text("\(ps.entry_count) entries")
+                                    .font(DSFont.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let desc = ps.description, !desc.isEmpty {
+                                Text(desc)
+                                    .font(DSFont.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let goal = ps.goal, !goal.isEmpty {
+                                Text("🎯 \(goal)")
+                                    .font(DSFont.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(.quaternary)
+                    )
+                }
+            }
+        }
     }
 
     // MARK: - AI Summary
@@ -336,5 +442,49 @@ struct DailyReviewContent: View {
     private func pipelineColor(_ name: String) -> Color {
         let idx = abs(name.hashValue) % pipelineColors.count
         return pipelineColors[idx]
+    }
+}
+
+// MARK: - FlowLayout (simple horizontal wrap) ----------------------------
+
+/// A simple flow layout that wraps children horizontally.
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 4
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+
+        for sub in subviews {
+            let size = sub.sizeThatFits(.unspecified)
+            if x + size.width > maxWidth && x > 0 {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        return CGSize(width: maxWidth, height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+
+        for sub in subviews {
+            let size = sub.sizeThatFits(.unspecified)
+            if x + size.width > bounds.maxX && x > bounds.minX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            sub.place(at: CGPoint(x: x, y: y), proposal: .unspecified)
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
     }
 }
