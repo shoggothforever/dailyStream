@@ -41,6 +41,13 @@ from .models import (
     Source,
     SourceKind,
 )
+from .templates import (
+    ModeTemplate,
+    export_mode_as_template,
+    get_template,
+    list_templates,
+    save_user_template,
+)
 
 __all__ = [
     "ATTACHMENT_CATALOG",
@@ -53,12 +60,17 @@ __all__ = [
     "FrameResult",
     "LEGACY_FIELDS",
     "Mode",
+    "ModeTemplate",
     "ModesState",
     "Preset",
     "Source",
     "SourceKind",
     "catalog_as_list",
     "default_modes",
+    "export_mode_as_template",
+    "get_template",
+    "list_templates",
     "migrate_legacy_presets",
+    "save_user_template",
     "validate_attachments",
 ]

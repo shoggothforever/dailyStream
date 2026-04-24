@@ -1223,6 +1223,135 @@ def _register_capture_modes_methods(d: Dispatcher, state: _ServerState) -> None:
             for k, v in state._interval_workers.items()
         ]}
 
+    # -- templates ------------------------------------------------------
+
+    @d.method("capture_modes.list_templates")
+    def _list_templates() -> dict:
+        from .capture_modes.templates import list_templates
+        return {"templates": [t.to_dict() for t in list_templates()]}
+
+    @d.method("capture_modes.install_template")
+    def _install_template(
+        template_id: Optional[str] = None,
+        template: Optional[dict] = None,
+        replace_existing: bool = False,
+        mode_id_override: Optional[str] = None,
+    ) -> dict:
+        """Install a template as a Mode.
+
+        Either ``template_id`` (lookup from built-in + user library) or
+        ``template`` (raw ModeTemplate JSON, for remote / pasted
+        imports) must be supplied.
+
+        ``replace_existing=False`` (default) → if a Mode with the same
+        id already exists, the new one is suffixed with ``-1`` / ``-2``
+        etc. so user customisations aren't clobbered.
+
+        ``mode_id_override`` lets the UI rename on install (nice for
+        letting users pick their own slug).
+        """
+        from .capture_modes.templates import ModeTemplate, get_template
+
+        tpl: Optional[ModeTemplate]
+        if template_id is not None:
+            tpl = get_template(template_id)
+            if tpl is None:
+                raise NotFound(f"Unknown template: {template_id}")
+        elif template is not None:
+            tpl = ModeTemplate.from_dict(template)
+            if tpl is None:
+                raise InvalidParams("Invalid template payload")
+        else:
+            raise InvalidParams(
+                "Provide either 'template_id' or 'template'")
+
+        cm = _ensure_state()
+        mode_payload = dict(tpl.mode)
+        new_id = mode_id_override or mode_payload.get("id") or tpl.template_id
+
+        if not replace_existing:
+            existing_ids = {m.id for m in cm.modes}
+            base = new_id
+            suffix = 1
+            while new_id in existing_ids:
+                new_id = f"{base}-{suffix}"
+                suffix += 1
+        mode_payload["id"] = new_id
+
+        parsed = Mode.from_dict(mode_payload)
+        if parsed is None:
+            raise InvalidParams("Template produced an invalid Mode payload")
+
+        # Validate every preset's attachments against the current catalog.
+        for p in parsed.presets:
+            errs = validate_attachments(p.attachments)
+            if errs:
+                raise InvalidParams(
+                    f"Preset '{p.name}' has invalid attachments: "
+                    f"{'; '.join(errs)}"
+                )
+
+        # Replace or append.
+        replaced = False
+        for i, existing in enumerate(cm.modes):
+            if existing.id == parsed.id:
+                cm.modes[i] = parsed
+                replaced = True
+                break
+        if not replaced:
+            cm.modes.append(parsed)
+        if cm.active_mode_id is None:
+            cm.active_mode_id = parsed.id
+
+        state.stop_all_interval_workers()
+        _persist()
+        return {
+            "mode_id": parsed.id,
+            "template_id": tpl.template_id,
+            "replaced": replaced,
+        }
+
+    @d.method("capture_modes.export_mode")
+    def _export_mode(
+        mode_id: str,
+        title: Optional[str] = None,
+        description: str = "",
+        author: str = "user",
+    ) -> dict:
+        """Wrap an existing Mode into a ModeTemplate payload.
+
+        Returned payload is ready to be written to disk / shared.  The
+        client can persist it locally via :py:meth:`save_user_template`
+        or drop it on a gist for others to import.
+        """
+        from .capture_modes.templates import export_mode_as_template
+
+        cm = _ensure_state()
+        mode = next((m for m in cm.modes if m.id == mode_id), None)
+        if mode is None:
+            raise NotFound(f"Unknown mode: {mode_id}")
+        tpl = export_mode_as_template(
+            mode, title=title, description=description, author=author,
+        )
+        return {"template": tpl.to_dict()}
+
+    @d.method("capture_modes.save_user_template")
+    def _save_user_template(template: dict) -> dict:
+        """Persist a template JSON under ``~/.dailystream/templates/``.
+
+        Used by the Designer's "Save as Template…" action.  Returns the
+        file path so the UI can reveal it in Finder.
+        """
+        from .capture_modes.templates import (
+            ModeTemplate,
+            save_user_template,
+        )
+        tpl = ModeTemplate.from_dict(template)
+        if tpl is None:
+            raise InvalidParams("Invalid template payload")
+        path = save_user_template(tpl)
+        return {"path": str(path), "template_id": tpl.template_id}
+
 
 # ---------------------------------------------------------------------------
 # Server-level assembly

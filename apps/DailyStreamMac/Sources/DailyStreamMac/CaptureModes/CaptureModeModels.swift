@@ -277,3 +277,31 @@ public struct AttachmentCatalogEntry: Codable, Identifiable, Equatable, Sendable
 
     public var isSingleChoice: Bool { kind.isSingleChoice }
 }
+
+// MARK: - Shareable templates -------------------------------------------
+
+/// Metadata-rich wrapper around a Mode payload — matches
+/// ``capture_modes.templates.ModeTemplate.to_dict`` on the Python side.
+public struct CaptureModeTemplate: Codable, Identifiable, Sendable, Hashable {
+    public var templateID: String
+    public var title: String
+    public var description: String
+    public var author: String
+    public var emoji: String
+    public var mode: CaptureMode
+    public var tags: [String]
+    public var prerequisites: [String]
+
+    public var id: String { templateID }
+
+    enum CodingKeys: String, CodingKey {
+        case templateID = "template_id"
+        case title
+        case description
+        case author
+        case emoji
+        case mode
+        case tags
+        case prerequisites
+    }
+}

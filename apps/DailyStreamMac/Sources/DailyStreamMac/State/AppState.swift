@@ -10,6 +10,7 @@
 
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 import UserNotifications
 import DailyStreamCore
 
@@ -934,6 +935,127 @@ extension AppState {
             await refreshCaptureModes()
         } catch {
             showToast(title: "Delete mode failed", subtitle: "\(error)")
+        }
+    }
+
+    // MARK: - Template library ------------------------------------------
+
+    public func listTemplates() async -> [CaptureModeTemplate] {
+        struct Result: Decodable { let templates: [CaptureModeTemplate] }
+        do {
+            let r: Result = try await bridge.call(
+                "capture_modes.list_templates", params: RPCEmptyParams()
+            )
+            return r.templates
+        } catch {
+            showToast(title: "Load templates failed",
+                      subtitle: "\(error)")
+            return []
+        }
+    }
+
+    public func installTemplate(_ templateID: String,
+                                replaceExisting: Bool = false) async {
+        struct Params: Encodable, Sendable {
+            let template_id: String
+            let replace_existing: Bool
+        }
+        struct Result: Decodable {
+            let mode_id: String
+            let replaced: Bool
+        }
+        do {
+            let r: Result = try await bridge.call(
+                "capture_modes.install_template",
+                params: Params(template_id: templateID,
+                               replace_existing: replaceExisting)
+            )
+            await refreshCaptureModes()
+            showToast(
+                title: r.replaced ? "Template replaced" : "Template installed",
+                subtitle: "Mode: \(r.mode_id)"
+            )
+        } catch {
+            showToast(title: "Install failed", subtitle: "\(error)")
+        }
+    }
+
+    /// Export a Mode as template JSON and write it to disk at the path
+    /// the user picks via NSSavePanel.  Returns the written URL.
+    @discardableResult
+    public func exportModeToFile(_ modeID: String) async -> URL? {
+        struct Params: Encodable, Sendable {
+            let mode_id: String
+            let author: String
+        }
+        struct Result: Decodable { let template: JSONValue }
+        do {
+            let r: Result = try await bridge.call(
+                "capture_modes.export_mode",
+                params: Params(mode_id: modeID, author: "user")
+            )
+            // Encode back to pretty JSON for the save panel.
+            let enc = JSONEncoder()
+            enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try enc.encode(r.template)
+            return await MainActor.run { () -> URL? in
+                let panel = NSSavePanel()
+                panel.nameFieldStringValue = "\(modeID).dstemplate.json"
+                panel.allowedContentTypes = [.json]
+                NSApp.activate(ignoringOtherApps: true)
+                guard panel.runModal() == .OK, let url = panel.url else {
+                    return nil
+                }
+                do {
+                    try data.write(to: url)
+                    showToast(title: "Template exported",
+                              subtitle: url.lastPathComponent)
+                    return url
+                } catch {
+                    showToast(title: "Write failed", subtitle: "\(error)")
+                    return nil
+                }
+            }
+        } catch {
+            showToast(title: "Export failed", subtitle: "\(error)")
+            return nil
+        }
+    }
+
+    /// Import a template from a local JSON file and install it.
+    public func importTemplateFromFile() async {
+        let url: URL? = await MainActor.run { () -> URL? in
+            let panel = NSOpenPanel()
+            panel.canChooseFiles = true
+            panel.canChooseDirectories = false
+            panel.allowsMultipleSelection = false
+            panel.allowedContentTypes = [.json]
+            panel.prompt = "Import"
+            panel.message = "Pick a DailyStream template JSON"
+            NSApp.activate(ignoringOtherApps: true)
+            return panel.runModal() == .OK ? panel.url : nil
+        }
+        guard let url else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            let decoded = try JSONDecoder().decode(JSONValue.self, from: data)
+            struct Params: Encodable, Sendable {
+                let template: JSONValue
+                let replace_existing: Bool
+            }
+            struct Result: Decodable {
+                let mode_id: String
+                let replaced: Bool
+            }
+            let r: Result = try await bridge.call(
+                "capture_modes.install_template",
+                params: Params(template: decoded, replace_existing: false)
+            )
+            await refreshCaptureModes()
+            showToast(title: "Template installed",
+                      subtitle: "Mode: \(r.mode_id)")
+        } catch {
+            showToast(title: "Import failed", subtitle: "\(error)")
         }
     }
 

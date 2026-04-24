@@ -64,6 +64,7 @@ struct CaptureModeDesignerView: View {
 
     @State private var selectedModeID: String? = nil
     @State private var selectedPresetID: String? = nil
+    @State private var showTemplateBrowser: Bool = false
 
     var body: some View {
         HSplitView {
@@ -142,12 +143,37 @@ struct CaptureModeDesignerView: View {
 
             Divider()
             HStack {
-                Button {
-                    Task { await createMode() }
+                Menu {
+                    Button {
+                        Task { await createMode() }
+                    } label: {
+                        Label("Blank Mode", systemImage: "square.dashed")
+                    }
+                    Button {
+                        showTemplateBrowser = true
+                    } label: {
+                        Label("From Template…", systemImage: "books.vertical")
+                    }
+                    Button {
+                        Task { await state.importTemplateFromFile() }
+                    } label: {
+                        Label("Import from File…", systemImage: "square.and.arrow.down")
+                    }
+                    if let id = selectedModeID {
+                        Divider()
+                        Button {
+                            Task { await state.exportModeToFile(id) }
+                        } label: {
+                            Label("Export Current Mode…",
+                                  systemImage: "square.and.arrow.up")
+                        }
+                    }
                 } label: {
-                    Label("New Mode", systemImage: "plus")
+                    Label("New", systemImage: "plus")
                 }
-                .buttonStyle(.borderless)
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+
                 Spacer()
                 if let id = selectedModeID,
                    id != state.captureModes.activeModeID {
@@ -160,6 +186,16 @@ struct CaptureModeDesignerView: View {
             .padding(8)
         }
         .background(Color(nsColor: .underPageBackgroundColor))
+        .sheet(isPresented: $showTemplateBrowser) {
+            TemplateBrowserSheet(
+                state: state,
+                onInstalled: { modeID in
+                    selectedModeID = modeID
+                    showTemplateBrowser = false
+                },
+                onDismiss: { showTemplateBrowser = false }
+            )
+        }
     }
 
     // MARK: - Column: Presets
