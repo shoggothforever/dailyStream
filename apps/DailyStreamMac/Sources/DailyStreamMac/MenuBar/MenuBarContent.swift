@@ -95,6 +95,10 @@ public struct MenuBarContent: View {
 
             Divider()
 
+            Button("About DailyStream") {
+                AboutWindowController.shared.show()
+            }
+
             Button("Quit") {
                 Task {
                     await state.shutdown()

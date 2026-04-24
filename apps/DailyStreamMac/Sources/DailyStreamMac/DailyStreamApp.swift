@@ -26,6 +26,10 @@ struct DailyStreamApp: App {
             MenuBarIcon(state: AppHost.shared.state.iconState)
         }
         .menuBarExtraStyle(.menu)
+
+        Settings {
+            PreferencesView()
+        }
     }
 }
 
