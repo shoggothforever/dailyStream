@@ -96,10 +96,10 @@ struct ToastView: View {
     @State private var appeared = false
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "checkmark.circle.fill")
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: message.kind.iconName)
                 .font(.system(size: 22))
-                .foregroundStyle(DSColor.success)
+                .foregroundStyle(message.kind.tint)
             VStack(alignment: .leading, spacing: 2) {
                 Text(message.title)
                     .font(.system(size: 13, weight: .semibold))
@@ -107,11 +107,13 @@ struct ToastView: View {
                     Text(sub)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                        .lineLimit(message.kind == .error ? 4 : 2)
+                        .truncationMode(.tail)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            Spacer()
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -121,7 +123,9 @@ struct ToastView: View {
                 .shadow(color: .black.opacity(0.18),
                         radius: 12, x: 0, y: 6)
         }
-        .frame(minWidth: 280, maxWidth: 360, minHeight: 56)
+        .frame(minWidth: 280,
+               maxWidth: message.kind == .error ? 460 : 360,
+               minHeight: 56)
         .opacity(appeared ? 1 : 0)
         .offset(x: appeared ? 0 : 12)
         .animation(.dsHudIn, value: appeared)

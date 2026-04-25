@@ -199,7 +199,7 @@ public final class AppState: ObservableObject {
                 subtitle: "AI: \(r.ai_mode) · \(r.workspace_dir)"
             )
         } catch {
-            showToast(title: "Create failed", subtitle: "\(error)")
+            showError(title: "Create failed", error: error)
         }
     }
 
@@ -230,7 +230,7 @@ public final class AppState: ObservableObject {
                 DailyReviewWindow.shared.show(data: data, bridge: bridge)
             }
         } catch {
-            showToast(title: "End failed", subtitle: "\(error)")
+            showError(title: "End failed", error: error)
         }
     }
 
@@ -261,7 +261,7 @@ public final class AppState: ObservableObject {
                 showToast(title: "No entries to review")
             }
         } catch {
-            showToast(title: "Review unavailable", subtitle: "\(error)")
+            showError(title: "Review unavailable", error: error)
         }
     }
 
@@ -336,7 +336,7 @@ public final class AppState: ObservableObject {
             showToast(title: "Workspace opened",
                       subtitle: workspace.title ?? latest.lastPathComponent)
         } catch {
-            showToast(title: "Open failed", subtitle: "\(error)")
+            showError(title: "Open failed", error: error)
         }
     }
 
@@ -383,7 +383,7 @@ public final class AppState: ObservableObject {
             showToast(title: "Preset saved: \(values.name)",
                       subtitle: subtitle)
         } catch {
-            showToast(title: "Preset save failed", subtitle: "\(error)")
+            showError(title: "Preset save failed", error: error)
         }
     }
 
@@ -397,7 +397,7 @@ public final class AppState: ObservableObject {
             await refreshPresets()
             showToast(title: "Preset deleted", subtitle: name)
         } catch {
-            showToast(title: "Preset delete failed", subtitle: "\(error)")
+            showError(title: "Preset delete failed", error: error)
         }
     }
 
@@ -421,7 +421,7 @@ public final class AppState: ObservableObject {
             showToast(title: "Pipeline created",
                       subtitle: values.name)
         } catch {
-            showToast(title: "Create failed", subtitle: "\(error)")
+            showError(title: "Create failed", error: error)
         }
     }
 
@@ -435,7 +435,7 @@ public final class AppState: ObservableObject {
             )
             await refreshStatus()
         } catch {
-            showToast(title: "Switch failed", subtitle: "\(error)")
+            showError(title: "Switch failed", error: error)
         }
     }
 
@@ -492,7 +492,7 @@ public final class AppState: ObservableObject {
                 "capture.clipboard.grab", params: RPCEmptyParams()
             )
         } catch {
-            showToast(title: "Clipboard read failed", subtitle: "\(error)")
+            showError(title: "Clipboard read failed", error: error)
             return
         }
 
@@ -571,7 +571,7 @@ public final class AppState: ObservableObject {
             showToast(title: "Saved to \(pipeline)",
                       subtitle: description.isEmpty ? kind : description)
         } catch {
-            showToast(title: "Save failed", subtitle: "\(error)")
+            showError(title: "Save failed", error: error)
         }
     }
 
@@ -616,7 +616,7 @@ public final class AppState: ObservableObject {
             // NOT an error from the user's perspective.
             return
         } catch {
-            showToast(title: "Screenshot failed", subtitle: "\(error)")
+            showError(title: "Screenshot failed", error: error)
             return
         }
 
@@ -665,14 +665,24 @@ public final class AppState: ObservableObject {
                 subtitle: description.isEmpty ? shortName : description
             )
         } catch {
-            showToast(title: "Save failed", subtitle: "\(error)")
+            showError(title: "Save failed", error: error)
         }
     }
 
     // MARK: - Toast
 
-    public func showToast(title: String, subtitle: String? = nil) {
-        toastMessage = ToastMessage(title: title, subtitle: subtitle)
+    public func showToast(title: String, subtitle: String? = nil,
+                          kind: ToastKind = .success) {
+        toastMessage = ToastMessage(title: title, subtitle: subtitle,
+                                    kind: kind)
+    }
+
+    /// Present a red-icon error toast.  Uses :func:`describeError` to
+    /// produce a reader-friendly subtitle (unwraps ``RPCError`` so the
+    /// user sees the Python-side message instead of
+    /// ``RPCError(-32002): …`` raw dump).
+    public func showError(title: String, error: Error) {
+        showToast(title: title, subtitle: describeError(error), kind: .error)
     }
 
     public func dismissToast() {
@@ -792,11 +802,62 @@ public final class AppState: ObservableObject {
 
 // MARK: - Toast --------------------------------------------------------
 
+public enum ToastKind: Sendable, Equatable {
+    case info          // generic neutral (blue)
+    case success       // default green check
+    case warning       // amber
+    case error         // red — used by showError
+
+    public var iconName: String {
+        switch self {
+        case .info:    return "info.circle.fill"
+        case .success: return "checkmark.circle.fill"
+        case .warning: return "exclamationmark.triangle.fill"
+        case .error:   return "xmark.octagon.fill"
+        }
+    }
+
+    public var tint: Color {
+        switch self {
+        case .info:    return DSColor.accent
+        case .success: return DSColor.success
+        case .warning: return .orange
+        case .error:   return .red
+        }
+    }
+}
+
 public struct ToastMessage: Identifiable, Equatable, Sendable {
     public let id = UUID()
     public let title: String
     public let subtitle: String?
+    public let kind: ToastKind
     public let createdAt: Date = Date()
+
+    public init(title: String, subtitle: String? = nil,
+                kind: ToastKind = .success) {
+        self.title = title
+        self.subtitle = subtitle
+        self.kind = kind
+    }
+}
+
+/// Human-readable formatting for arbitrary errors surfaced in toasts.
+///
+/// Special cases:
+///  * ``RPCError`` → ``"<message> (code <code>)"`` (uses the message
+///    the Python side crafted — far more actionable than the default
+///    ``"RPCError(-32002): …"`` ``CustomStringConvertible``).
+///  * ``BridgeError.rpcFailed`` → unwraps and delegates.
+///  * Everything else → ``localizedDescription``.
+public func describeError(_ error: Error) -> String {
+    if let rpc = error as? RPCError {
+        return "\(rpc.message) (code \(rpc.code))"
+    }
+    if case let BridgeError.rpcFailed(rpc) = error {
+        return "\(rpc.message) (code \(rpc.code))"
+    }
+    return error.localizedDescription
 }
 
 // MARK: - DTOs shared between AppState call sites ----------------------
@@ -905,7 +966,7 @@ extension AppState {
                 showToast(title: "Mode: \(name)")
             }
         } catch {
-            showToast(title: "Mode switch failed", subtitle: "\(error)")
+            showError(title: "Mode switch failed", error: error)
         }
     }
 
@@ -920,7 +981,7 @@ extension AppState {
             )
             await refreshCaptureModes()
         } catch {
-            showToast(title: "Save mode failed", subtitle: "\(error)")
+            showError(title: "Save mode failed", error: error)
         }
     }
 
@@ -934,7 +995,7 @@ extension AppState {
             )
             await refreshCaptureModes()
         } catch {
-            showToast(title: "Delete mode failed", subtitle: "\(error)")
+            showError(title: "Delete mode failed", error: error)
         }
     }
 
@@ -976,7 +1037,7 @@ extension AppState {
                 subtitle: "Mode: \(r.mode_id)"
             )
         } catch {
-            showToast(title: "Install failed", subtitle: "\(error)")
+            showError(title: "Install failed", error: error)
         }
     }
 
@@ -1012,12 +1073,12 @@ extension AppState {
                               subtitle: url.lastPathComponent)
                     return url
                 } catch {
-                    showToast(title: "Write failed", subtitle: "\(error)")
+                    showError(title: "Write failed", error: error)
                     return nil
                 }
             }
         } catch {
-            showToast(title: "Export failed", subtitle: "\(error)")
+            showError(title: "Export failed", error: error)
             return nil
         }
     }
@@ -1055,7 +1116,7 @@ extension AppState {
             showToast(title: "Template installed",
                       subtitle: "Mode: \(r.mode_id)")
         } catch {
-            showToast(title: "Import failed", subtitle: "\(error)")
+            showError(title: "Import failed", error: error)
         }
     }
 
@@ -1072,7 +1133,7 @@ extension AppState {
             )
             await refreshCaptureModes()
         } catch {
-            showToast(title: "Save preset failed", subtitle: "\(error)")
+            showError(title: "Save preset failed", error: error)
         }
     }
 
@@ -1089,7 +1150,7 @@ extension AppState {
             )
             await refreshCaptureModes()
         } catch {
-            showToast(title: "Delete preset failed", subtitle: "\(error)")
+            showError(title: "Delete preset failed", error: error)
         }
     }
 
@@ -1153,7 +1214,7 @@ extension AppState {
             // Cancelled — same contract as the legacy screenshot path.
             return
         } catch {
-            showToast(title: "Capture failed", subtitle: "\(error)")
+            showError(title: "Capture failed", error: error)
         }
     }
 
@@ -1174,7 +1235,7 @@ extension AppState {
                           subtitle: r.seconds.map { "every \($0)s" })
             }
         } catch {
-            showToast(title: "Start failed", subtitle: "\(error)")
+            showError(title: "Start failed", error: error)
         }
     }
 
