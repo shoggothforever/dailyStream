@@ -179,6 +179,21 @@ def _group_attachments(atts: list[Attachment]) -> _AttGroups:
             groups.window_ctrl.append(att)
         elif spec.kind == AttachmentKind.POST:
             groups.post.append(att)
+
+    # Stable-sort POST so data-producing attachments run before
+    # data-consuming ones.  This lets users wire up "AI → shell script"
+    # pipelines without caring about drag order in the Designer.
+    #
+    # Order: producers (ocr, ai_analyze, quick_tags, auto_copy_clipboard)
+    # → consumer-side hooks (run_command) → archivers (nothing else today).
+    _POST_ORDER = {
+        "auto_ocr": 0,
+        "ai_analyze": 1,
+        "quick_tags": 2,
+        "auto_copy_clipboard": 3,
+        "run_command": 100,      # always last
+    }
+    groups.post.sort(key=lambda a: _POST_ORDER.get(a.id, 50))
     return groups
 
 
@@ -431,23 +446,71 @@ def _run_command(params: dict[str, Any], frame: FrameResult,
     shell command.  Context is passed via ``DAILYSTREAM_*`` environment
     variables so scripts stay readable.
 
+    **Environment variables injected**
+
+    Core context:
+
+    * ``DAILYSTREAM_FRAME_PATH``    — absolute path of the captured PNG
+    * ``DAILYSTREAM_FRAME_INDEX``   — 0-based index in a burst / interval
+    * ``DAILYSTREAM_SOURCE_KIND``   — ``interactive`` / ``fullscreen`` / …
+    * ``DAILYSTREAM_TIMESTAMP``     — ISO 8601 timestamp
+    * ``DAILYSTREAM_WORKSPACE_DIR`` — absolute path of the workspace
+    * ``DAILYSTREAM_PIPELINE``      — active pipeline name (may be empty)
+    * ``DAILYSTREAM_MODE_ID`` / ``_NAME`` / ``_PRESET_ID`` / ``_PRESET_NAME``
+    * ``DAILYSTREAM_DESCRIPTION``   — user-typed HUD description (silent mode only)
+
+    Upstream-attachment artifacts — populated only when the matching
+    attachment ran before ``run_command`` on the same frame:
+
+    * ``DAILYSTREAM_OCR_TEXT``           — from ``auto_ocr``
+    * ``DAILYSTREAM_AI_DESCRIPTION``     — pretty summary from ``ai_analyze``
+    * ``DAILYSTREAM_AI_DESCRIPTION_RAW`` — just the AI description field
+    * ``DAILYSTREAM_AI_CATEGORY``        — AI category label
+    * ``DAILYSTREAM_AI_KEY_ELEMENTS``    — newline-separated tags
+    * ``DAILYSTREAM_ARTIFACTS_JSON``     — JSON blob of the full
+      ``frame.post_artifacts`` dict, for scripts that want structured
+      access (``jq .ai_key_elements[0]``)
+
+    ``run_command`` is always moved to the tail of the POST list so all
+    upstream artifacts are available regardless of the order the user
+    dragged things in the Designer.
+
     On failure we emit a ``capture.hook_failed`` event so the Swift side
     can surface a toast; successful stdout is attached to
     ``frame.post_artifacts['hook_stdout']`` for later consumption.
     """
+    import json as _json
     import os
-    import shlex
 
     cmd_raw = str(params.get("command", "")).strip()
     if not cmd_raw:
         return
     wait = bool(params.get("wait", False))
     timeout = int(params.get("timeout_seconds", 30))
+    wait_for_ai = int(params.get("wait_for_ai_seconds", 0))
+
+    # Optional grace period so scripts can consume async AI output.
+    # We poll for ``ai_description`` (or the failure-path ``ai_prefill``
+    # flag) in ``frame.post_artifacts``; done as cheap spin rather than
+    # threading.Event so we don't have to rewire ``_run_ai_analyze``.
+    if wait_for_ai > 0 and "ai_description" not in frame.post_artifacts:
+        deadline = time.monotonic() + wait_for_ai
+        while time.monotonic() < deadline:
+            if "ai_description" in frame.post_artifacts:
+                break
+            time.sleep(0.1)
+
+    # Snapshot artifacts at the moment we fire the command.  Async AI
+    # runs may still be in-flight; whatever has landed by now is what
+    # the script gets.
+    artifacts = dict(frame.post_artifacts)
 
     env = os.environ.copy()
     env.update({
         "DAILYSTREAM_FRAME_PATH": str(frame.path) if frame.path else "",
-        "DAILYSTREAM_OCR_TEXT": str(frame.post_artifacts.get("ocr_text", "") or ""),
+        "DAILYSTREAM_FRAME_INDEX": str(frame.index),
+        "DAILYSTREAM_SOURCE_KIND": frame.source_kind,
+        "DAILYSTREAM_OCR_TEXT": str(artifacts.get("ocr_text", "") or ""),
         "DAILYSTREAM_PRESET_ID": ctx.preset_id,
         "DAILYSTREAM_PRESET_NAME": ctx.preset_name,
         "DAILYSTREAM_MODE_ID": ctx.mode_id,
@@ -457,6 +520,30 @@ def _run_command(params: dict[str, Any], frame: FrameResult,
         "DAILYSTREAM_TIMESTAMP": _iso_now(),
         "DAILYSTREAM_WORKSPACE_DIR": _workspace_dir_for(ctx),
     })
+
+    # --- AI-specific convenience variables ----------------------------
+    ai_desc = artifacts.get("ai_description")
+    if isinstance(ai_desc, str):
+        env["DAILYSTREAM_AI_DESCRIPTION"] = ai_desc
+    ai_desc_raw = artifacts.get("ai_description_raw")
+    if isinstance(ai_desc_raw, str):
+        env["DAILYSTREAM_AI_DESCRIPTION_RAW"] = ai_desc_raw
+    ai_category = artifacts.get("ai_category")
+    if isinstance(ai_category, str):
+        env["DAILYSTREAM_AI_CATEGORY"] = ai_category
+    ai_elements = artifacts.get("ai_key_elements")
+    if isinstance(ai_elements, list):
+        env["DAILYSTREAM_AI_KEY_ELEMENTS"] = "\n".join(
+            str(x) for x in ai_elements
+        )
+
+    # --- Structured escape hatch --------------------------------------
+    try:
+        env["DAILYSTREAM_ARTIFACTS_JSON"] = _json.dumps(
+            artifacts, ensure_ascii=False, default=str,
+        )
+    except Exception:  # noqa: BLE001 — never let a weird artifact kill the hook
+        env["DAILYSTREAM_ARTIFACTS_JSON"] = "{}"
 
     # If the command looks like an existing file path, execute it
     # directly; otherwise let the shell interpret it.
@@ -562,8 +649,8 @@ def _run_ai_analyze(params: dict[str, Any], frame: FrameResult,
             description_parts.append(result.description.strip())
         if result.category:
             description_parts.append(f"[{result.category}]")
-        if result.elements:
-            tag_line = " ".join(f"#{t}" for t in result.elements[:5])
+        if result.key_elements:
+            tag_line = " ".join(f"#{t}" for t in result.key_elements[:5])
             if tag_line:
                 description_parts.append(tag_line)
         summary = " ".join(description_parts).strip()[:400]
@@ -575,6 +662,17 @@ def _run_ai_analyze(params: dict[str, Any], frame: FrameResult,
                 # ocr_text when both are present (handled Swift-side).
                 frame.post_artifacts.setdefault("ocr_text", summary)
                 frame.post_artifacts["ai_prefill"] = True
+
+        # Atomic artifacts so downstream handlers (notably ``run_command``)
+        # can grab individual fields without parsing the ``ai_description``
+        # string.  ``ai_description`` stays the "pretty" summary, these are
+        # raw values.
+        if result.description:
+            frame.post_artifacts["ai_description_raw"] = result.description.strip()
+        if result.category:
+            frame.post_artifacts["ai_category"] = result.category
+        if result.key_elements:
+            frame.post_artifacts["ai_key_elements"] = list(result.key_elements)
 
         # Persist into ai_analyses.json so the existing viewer picks it up.
         if save_to_analysis and ctx.pm is not None and ctx.wm.is_active:

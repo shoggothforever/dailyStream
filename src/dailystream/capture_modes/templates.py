@@ -394,6 +394,135 @@ _BUILTIN_TEMPLATES: list[ModeTemplate] = [
             ],
         },
     ),
+
+    # -------------------------------------------------------------------
+    # 6. AI Commit Message — screenshot-driven git commits
+    # -------------------------------------------------------------------
+    ModeTemplate(
+        template_id="ai-commit-message",
+        title="AI Commit Message",
+        description=(
+            "Snap the whole screen (IDE + diff + terminal + browser) "
+            "and let Claude generate a Conventional-Commits message "
+            "from whatever it sees.  ai_commit_message.sh then runs "
+            "`git commit -m \"$DAILYSTREAM_AI_DESCRIPTION_RAW\"` in "
+            "your current working directory.  The POST chain is "
+            "auto-ordered so run_command sees the AI result even "
+            "when ai_analyze runs async."
+        ),
+        author="DailyStream",
+        emoji="💾",
+        tags=["git", "ai", "dev", "hook"],
+        prerequisites=[
+            "Requires ai_api_key configured (Settings → AI).",
+            "Edit hooks/ai_commit_message.sh if you want to pin a "
+            "specific repo via WORKDIR=… or change the style.",
+            "Trigger this preset while the terminal focus is inside "
+            "the target git repository.",
+        ],
+        mode={
+            "id": "ai-commit-message",
+            "name": "AI Commits",
+            "emoji": "💾",
+            "presets": [
+                _preset(
+                    "full-commit", "Snap & Commit", "💾",
+                    "fullscreen",
+                    attachments=[
+                        _att("single"),
+                        _att("silent_save"),
+                        _att("flash_menubar"),
+                        _att("hide_cursor"),
+                        _att("ai_analyze",
+                             user_hint=(
+                                 "Write a single-line git commit message "
+                                 "in Conventional Commits format "
+                                 "(feat|fix|refactor|docs|test|chore: …) "
+                                 "based on what you see on screen. "
+                                 "Return ONLY the message, no quotes, "
+                                 "no explanation."
+                             ),
+                             prefill_hud=False,
+                             save_to_analysis=False,
+                             wait=True),
+                        _att("run_command",
+                             command=str(Path.home() /
+                                         ".dailystream/hooks/ai_commit_message.sh"),
+                             wait=True,
+                             timeout_seconds=30,
+                             wait_for_ai_seconds=0),
+                        _att("current_pipeline"),
+                    ],
+                    hotkey="<cmd>+<shift>+g",
+                ),
+            ],
+        },
+    ),
+
+    # -------------------------------------------------------------------
+    # 7. Smart Archive — AI curates which frames to keep
+    # -------------------------------------------------------------------
+    ModeTemplate(
+        template_id="smart-archive",
+        title="Smart Archive",
+        description=(
+            "Long-running interval capture where Claude tags every frame "
+            "and smart_archive.sh decides whether to keep, categorise, "
+            "or delete it.  Think of it as a janitor: distraction "
+            "frames (social media, video sites) get dropped on the "
+            "floor; everything else lands in "
+            "~/DailyStreamArchive/<date>/<category>/ with a TSV index.  "
+            "Writes ~30% less disk than a naïve 'keep everything' "
+            "interval mode."
+        ),
+        author="DailyStream",
+        emoji="🗂",
+        tags=["interval", "ai", "archive", "hook"],
+        prerequisites=[
+            "Requires ai_api_key configured (Settings → AI).",
+            "ai_analyze runs async (wait=false) so the interval stays "
+            "on schedule; run_command waits up to 10s for the AI "
+            "result via wait_for_ai_seconds.",
+        ],
+        mode={
+            "id": "smart-archive",
+            "name": "Smart Archive",
+            "emoji": "🗂",
+            "presets": [
+                _preset(
+                    "curate", "Curate Every 60s", "🧹",
+                    "fullscreen",
+                    attachments=[
+                        _att("interval", seconds=60, max_count=0),
+                        _att("silent_save"),
+                        _att("flash_menubar"),
+                        _att("hide_cursor"),
+                        _att("hide_dock"),
+                        _att("ai_analyze",
+                             user_hint=(
+                                 "Classify this screen.  Return JSON with "
+                                 "description, category "
+                                 "(coding|design|browsing|document|communication|other), "
+                                 "and key_elements.  Include 'distracted' "
+                                 "in key_elements when the user is on "
+                                 "social media, video sites, or games."
+                             ),
+                             prefill_hud=False,
+                             save_to_analysis=True,
+                             wait=False),
+                        _att("run_command",
+                             command=str(Path.home() /
+                                         ".dailystream/hooks/smart_archive.sh"),
+                             wait=False,
+                             timeout_seconds=30,
+                             wait_for_ai_seconds=10),
+                        _att("current_pipeline"),
+                    ],
+                    hotkey=None,
+                ),
+            ],
+        },
+    ),
 ]
 
 

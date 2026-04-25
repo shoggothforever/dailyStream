@@ -370,6 +370,128 @@ class TestExecutor:
         assert len(failures) == 1
         assert failures[0]["returncode"] == 7
 
+    def test_run_command_reads_upstream_artifacts(self, stub_capture, tmp_path):
+        """run_command must see OCR + AI artifacts from earlier POSTs."""
+        from dailystream.capture_modes import executor as _ex
+
+        # Stub auto_ocr to always emit a known string.
+        monkey_ocr_called = {"n": 0}
+
+        def _fake_ocr(path):
+            monkey_ocr_called["n"] += 1
+            return "Hello OCR"
+
+        # Stub ai_analyze by directly patching the helper so no anthropic
+        # SDK / API key is needed.
+        def _fake_ai(params, frame, ctx_):
+            frame.post_artifacts["ai_description"] = "Cat sitting on keyboard"
+            frame.post_artifacts["ai_description_raw"] = "Cat sitting on keyboard"
+            frame.post_artifacts["ai_category"] = "other"
+            frame.post_artifacts["ai_key_elements"] = ["cat", "keyboard"]
+
+        events: list = []
+        ctx = ExecutionContext(
+            wm=_StubWM(),
+            pm=_StubPM(stub_capture),
+            publish_event=lambda m, p: events.append((m, p)),
+            mode_id="m1", mode_name="Mode1",
+            preset_id="p1", preset_name="PresetOne",
+        )
+
+        # Script writes every env we care about into the marker.
+        marker = tmp_path / "env.txt"
+        cmd = (
+            'printf "%s\\n" '
+            '"ocr=$DAILYSTREAM_OCR_TEXT" '
+            '"ai_desc=$DAILYSTREAM_AI_DESCRIPTION" '
+            '"ai_cat=$DAILYSTREAM_AI_CATEGORY" '
+            '"ai_el=$DAILYSTREAM_AI_KEY_ELEMENTS" '
+            '"idx=$DAILYSTREAM_FRAME_INDEX" '
+            '"src=$DAILYSTREAM_SOURCE_KIND" '
+            '"artifacts_len=${#DAILYSTREAM_ARTIFACTS_JSON}" '
+            f'> {marker}'
+        )
+
+        preset = Preset(
+            id="p1", name="PresetOne",
+            source=Source(kind=SourceKind.FULLSCREEN),
+            attachments=[
+                Attachment(id="single"),
+                # Intentionally putting run_command BEFORE ai_analyze to
+                # prove the POST sorter re-orders it to the tail.
+                Attachment(id="run_command",
+                           params={"command": cmd, "wait": True,
+                                   "timeout_seconds": 5}),
+                Attachment(id="auto_ocr"),
+                Attachment(id="ai_analyze",
+                           params={"user_hint": "describe", "wait": True,
+                                   "save_to_analysis": False,
+                                   "prefill_hud": False}),
+            ],
+        )
+
+        from unittest.mock import patch
+        with patch.object(_ex, "_run_ocr", _fake_ocr), \
+                patch.object(_ex, "_run_ai_analyze", _fake_ai):
+            CaptureExecutor().execute(preset, ctx)
+
+        assert marker.exists()
+        text = marker.read_text(encoding="utf-8")
+        assert "ocr=Hello OCR" in text
+        assert "ai_desc=Cat sitting on keyboard" in text
+        assert "ai_cat=other" in text
+        assert "ai_el=cat" in text  # multiline newline-joined
+        assert "idx=0" in text
+        assert "src=fullscreen" in text
+        # ARTIFACTS_JSON should be non-trivial
+        lines = {k.split("=", 1)[0]: k.split("=", 1)[1]
+                 for k in text.strip().splitlines() if "=" in k}
+        assert int(lines["artifacts_len"]) > 20
+        # auto_ocr really ran
+        assert monkey_ocr_called["n"] == 1
+
+    def test_run_command_artifacts_json_is_parseable(self, stub_capture, tmp_path):
+        """DAILYSTREAM_ARTIFACTS_JSON must round-trip through jq/python json."""
+        import json as _json
+
+        ctx = ExecutionContext(
+            wm=_StubWM(),
+            pm=_StubPM(stub_capture),
+            publish_event=lambda m, p: None,
+            mode_id="m",
+        )
+        marker = tmp_path / "out.json"
+        cmd = f'printf "%s" "$DAILYSTREAM_ARTIFACTS_JSON" > {marker}'
+        preset = Preset(
+            id="p", name="JSON",
+            source=Source(kind=SourceKind.FULLSCREEN),
+            attachments=[
+                Attachment(id="single"),
+                Attachment(id="run_command",
+                           params={"command": cmd, "wait": True,
+                                   "timeout_seconds": 5}),
+            ],
+        )
+        CaptureExecutor().execute(preset, ctx)
+        assert marker.exists()
+        # Empty POST chain → {} or a dict with no upstream keys.
+        obj = _json.loads(marker.read_text(encoding="utf-8") or "{}")
+        assert isinstance(obj, dict)
+
+    def test_post_sorter_moves_run_command_last(self):
+        """_group_attachments must stable-sort run_command to the end."""
+        from dailystream.capture_modes.executor import _group_attachments
+
+        atts = [
+            Attachment(id="run_command", params={"command": "true"}),
+            Attachment(id="ai_analyze"),
+            Attachment(id="auto_ocr"),
+        ]
+        groups = _group_attachments(atts)
+        ids = [a.id for a in groups.post]
+        assert ids == ["auto_ocr", "ai_analyze", "run_command"], \
+            f"unexpected POST order: {ids}"
+
     def test_hide_cursor_passes_no_cursor_flag(self, stub_capture,
                                                monkeypatch):
         """hide_cursor attachment must forward no_cursor=True to screencapture."""

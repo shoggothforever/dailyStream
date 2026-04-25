@@ -233,7 +233,10 @@ _register(AttachmentSpec(
     label="AI Analyze",
     description=(
         "Send the frame to the configured Claude model and optionally "
-        "prefill the description HUD with the result."
+        "prefill the description HUD with the result.  Also populates "
+        "post_artifacts (ai_description / ai_description_raw / "
+        "ai_category / ai_key_elements) so a later ``run_command`` "
+        "can read them from DAILYSTREAM_AI_* environment variables."
     ),
     icon="sparkles",
     params_schema={
@@ -266,8 +269,10 @@ _register(AttachmentSpec(
     label="Run Command",
     description=(
         "Run a custom shell command / script after each frame.  "
-        "Receives context via environment variables "
-        "(DAILYSTREAM_FRAME_PATH, DAILYSTREAM_OCR_TEXT, …)."
+        "Receives full context via DAILYSTREAM_* environment variables "
+        "(frame path, OCR text, AI description / category / tags, "
+        "artifacts JSON blob).  Always executed last in the POST chain "
+        "so all upstream producers are visible."
     ),
     icon="terminal",
     params_schema={
@@ -286,6 +291,15 @@ _register(AttachmentSpec(
             default=30,
             help="Kill the command if it runs longer than this",
             min=1, max=600,
+        ),
+        "wait_for_ai_seconds": ParamSpec(
+            kind="int",
+            default=0,
+            help=(
+                "Give an async AI Analyze up to N seconds to finish "
+                "before firing.  0 = don't wait (fire immediately)."
+            ),
+            min=0, max=120,
         ),
     },
 ))
