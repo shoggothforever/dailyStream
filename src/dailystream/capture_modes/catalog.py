@@ -190,14 +190,6 @@ _register(AttachmentSpec(
 # -- POST (multi-choice, order matters) ------------------------------------
 
 _register(AttachmentSpec(
-    id="auto_ocr",
-    kind=AttachmentKind.POST,
-    label="Auto OCR",
-    description="Run Vision OCR on the captured image and attach the text.",
-    icon="text.viewfinder",
-))
-
-_register(AttachmentSpec(
     id="quick_tags",
     kind=AttachmentKind.POST,
     label="Quick Tags",

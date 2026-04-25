@@ -35,10 +35,10 @@ fi
 TS="${DAILYSTREAM_TIMESTAMP:-$(date -Iseconds)}"
 PRESET="${DAILYSTREAM_PRESET_NAME:-capture}"
 PIPELINE="${DAILYSTREAM_PIPELINE:-}"
-OCR="${DAILYSTREAM_OCR_TEXT:-}"
+AI_DESC="${DAILYSTREAM_AI_DESCRIPTION:-}"
 
 SUBJECT="[$PRESET] $TS"
-BODY="DailyStream capture\nPipeline: $PIPELINE\nTimestamp: $TS\n\nOCR:\n$OCR"
+BODY="DailyStream capture\nPipeline: $PIPELINE\nTimestamp: $TS\n\nAI:\n$AI_DESC"
 
 SMTP_HOST="$SMTP_HOST" \
 SMTP_PORT="$SMTP_PORT" \

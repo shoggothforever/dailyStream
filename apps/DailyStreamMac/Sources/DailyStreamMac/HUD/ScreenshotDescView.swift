@@ -10,7 +10,7 @@
 //   line 624).
 // * Empty description + Save is allowed (desc=="").
 // * When ``initialText`` is non-empty (e.g. pre-filled by the
-//   ``auto_ocr`` Attachment) the hint bar shows a small badge so the
+//   ``ai_analyze`` Attachment) the hint bar shows a small badge so the
 //   user knows the content is suggested and fully editable.
 
 import SwiftUI
@@ -26,11 +26,12 @@ struct ScreenshotDescView: View {
     let pipeline: String
     let presetName: String?       // non-nil when triggered by a preset
     let thumbnailURL: URL?
-    /// Pre-filled description; typically the OCR text for Presets that
-    /// include the ``auto_ocr`` Attachment.  ``""`` means "no suggestion".
+    /// Pre-filled description; typically the AI-generated summary for
+    /// Presets that include the ``ai_analyze`` Attachment.  ``""`` means
+    /// "no suggestion".
     let initialText: String
     /// Hint shown next to the text field when ``initialText`` is
-    /// present (e.g. "from OCR"), giving the user context about where
+    /// present (e.g. "AI"), giving the user context about where
     /// the suggestion came from.
     let initialTextSource: String?
 

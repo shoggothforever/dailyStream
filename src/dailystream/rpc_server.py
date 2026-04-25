@@ -1108,9 +1108,9 @@ def _register_capture_modes_methods(d: Dispatcher, state: _ServerState) -> None:
                                  frame.path)
                 continue
             description = ""
-            ocr = frame.post_artifacts.get("ocr_text")
-            if ocr:
-                description = str(ocr)[:400]
+            ai = frame.post_artifacts.get("ai_description")
+            if ai:
+                description = str(ai)[:400]
             try:
                 entry = state.pm.add_entry(
                     pipeline, "image", str(frame.path), description,

@@ -187,7 +187,6 @@ def _group_attachments(atts: list[Attachment]) -> _AttGroups:
     # Order: producers (ocr, ai_analyze, quick_tags, auto_copy_clipboard)
     # → consumer-side hooks (run_command) → archivers (nothing else today).
     _POST_ORDER = {
-        "auto_ocr": 0,
         "ai_analyze": 1,
         "quick_tags": 2,
         "auto_copy_clipboard": 3,
@@ -366,11 +365,7 @@ def _run_post(att: Attachment, frame: FrameResult,
     if frame.path is None:
         return
     try:
-        if att.id == "auto_ocr":
-            text = _run_ocr(frame.path)
-            if text:
-                frame.post_artifacts["ocr_text"] = text
-        elif att.id == "quick_tags":
+        if att.id == "quick_tags":
             # The Swift side owns the UI for the 2-second tag window;
             # we only broadcast an event with the schema so it can render.
             ctx.publish_event("capture.quick_tags_prompt", {
@@ -387,42 +382,6 @@ def _run_post(att: Attachment, frame: FrameResult,
             _run_ai_analyze(att.params, frame, ctx)
     except Exception:  # noqa: BLE001
         logger.exception("post handler failed for %s", att.id)
-
-
-def _run_ocr(path: Path) -> Optional[str]:
-    """Best-effort OCR using the Vision framework — returns ``None`` if unavailable."""
-    try:
-        import Quartz  # type: ignore[import]
-        import Vision  # type: ignore[import]
-    except Exception:  # noqa: BLE001
-        return None
-    try:
-        import objc  # type: ignore[import]  # noqa: F401
-    except Exception:  # noqa: BLE001
-        pass
-
-    try:
-        image = Quartz.CIImage.imageWithContentsOfURL_(
-            Quartz.NSURL.fileURLWithPath_(str(path))
-        )
-        if image is None:
-            return None
-        request = Vision.VNRecognizeTextRequest.alloc().init()
-        request.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
-        handler = Vision.VNImageRequestHandler.alloc().initWithCIImage_options_(
-            image, None
-        )
-        handler.performRequests_error_([request], None)
-        observations = request.results() or []
-        lines: list[str] = []
-        for obs in observations:
-            candidates = obs.topCandidates_(1)
-            if candidates and len(candidates) > 0:
-                lines.append(str(candidates[0].string()))
-        return "\n".join(lines).strip() or None
-    except Exception:  # noqa: BLE001
-        logger.exception("Vision OCR failed")
-        return None
 
 
 def _copy_image_to_clipboard(path: Path) -> None:
@@ -462,7 +421,6 @@ def _run_command(params: dict[str, Any], frame: FrameResult,
     Upstream-attachment artifacts — populated only when the matching
     attachment ran before ``run_command`` on the same frame:
 
-    * ``DAILYSTREAM_OCR_TEXT``           — from ``auto_ocr``
     * ``DAILYSTREAM_AI_DESCRIPTION``     — pretty summary from ``ai_analyze``
     * ``DAILYSTREAM_AI_DESCRIPTION_RAW`` — just the AI description field
     * ``DAILYSTREAM_AI_CATEGORY``        — AI category label
@@ -510,7 +468,6 @@ def _run_command(params: dict[str, Any], frame: FrameResult,
         "DAILYSTREAM_FRAME_PATH": str(frame.path) if frame.path else "",
         "DAILYSTREAM_FRAME_INDEX": str(frame.index),
         "DAILYSTREAM_SOURCE_KIND": frame.source_kind,
-        "DAILYSTREAM_OCR_TEXT": str(artifacts.get("ocr_text", "") or ""),
         "DAILYSTREAM_PRESET_ID": ctx.preset_id,
         "DAILYSTREAM_PRESET_NAME": ctx.preset_name,
         "DAILYSTREAM_MODE_ID": ctx.mode_id,
@@ -658,9 +615,6 @@ def _run_ai_analyze(params: dict[str, Any], frame: FrameResult,
         if summary:
             frame.post_artifacts["ai_description"] = summary
             if prefill:
-                # Same key as OCR — the HUD prefers ai_description over
-                # ocr_text when both are present (handled Swift-side).
-                frame.post_artifacts.setdefault("ocr_text", summary)
                 frame.post_artifacts["ai_prefill"] = True
 
         # Atomic artifacts so downstream handlers (notably ``run_command``)

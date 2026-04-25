@@ -1210,10 +1210,10 @@ extension AppState {
         //
         // This limits Capture Mode features for non-silent single
         // presets to: source kind, region, hide_cursor.  Post-processing
-        // attachments (auto_ocr / ai_analyze) are only honoured on the
-        // silent / burst / interval paths for now — they never worked
-        // reliably on the interactive path anyway because the HUD
-        // raced ahead of the async AI call.
+        // attachments (ai_analyze) are only honoured on the silent /
+        // burst / interval paths for now — they never worked reliably
+        // on the interactive path anyway because the HUD raced ahead
+        // of the async AI call.
         // ───────────────────────────────────────────────────────────
         if strategyID == "single" && !silent {
             // Clipboard preset: just reuse the dedicated clipboard RPC
@@ -1334,9 +1334,8 @@ extension AppState {
 
         // Non-silent single shot: open the description HUD for each
         // captured frame in sequence (usually 1).  When the Preset
-        // includes ``ai_analyze`` or ``auto_ocr`` we pre-fill the
-        // description so the user just has to tweak or ⏎ to save.
-        var presentedAny = false
+        // includes ``ai_analyze`` we pre-fill the description so the
+        // user just has to tweak or ⏎ to save.
         for frame in report.frames {
             if frame.skipped {
                 // Skipped frames (user ESC / screencapture fail) should
@@ -1356,24 +1355,10 @@ extension AppState {
                           kind: .warning)
                 continue
             }
-            presentedAny = true
             let fileURL = URL(fileURLWithPath: p)
-            // AI description wins over raw OCR because it's already a
-            // sentence; fall back to OCR if AI isn't available.
             let aiText = frame.post_artifacts?["ai_description"]?.stringValue ?? ""
-            let ocrText = frame.post_artifacts?["ocr_text"]?.stringValue ?? ""
-            let prefill: String
-            let source: String?
-            if !aiText.isEmpty {
-                prefill = aiText
-                source = "AI"
-            } else if !ocrText.isEmpty {
-                prefill = ocrText
-                source = "OCR"
-            } else {
-                prefill = ""
-                source = nil
-            }
+            let prefill = aiText
+            let source: String? = aiText.isEmpty ? nil : "AI"
             let result: ScreenshotDescResult? = await HUDHost.shared.present { close in
                 ScreenshotDescView(
                     filename: fileURL.lastPathComponent,

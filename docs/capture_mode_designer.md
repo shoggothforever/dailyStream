@@ -36,7 +36,6 @@ accidentally.
   * `hide_cursor` — omit the mouse pointer from the image (passes `-C` to `screencapture`)
   * `hide_dock` — toggle Dock auto-hide via AppleScript; restored after the shot
 * **POST** *(multi, ordered)* — post-processing per frame:
-  * `auto_ocr` — Vision framework text recognition, result written to `post_artifacts.ocr_text`
   * `quick_tags` — transient keypress-to-tag HUD
   * `auto_copy_clipboard` — copy the frame to the system clipboard
   * `ai_analyze` — send the frame to Claude and optionally prefill the HUD description
@@ -169,7 +168,7 @@ All methods live in the `capture_modes.*` namespace (see also
       "source_kind": "interactive",
       "skipped": false,
       "error": null,
-      "post_artifacts": { "ocr_text": "…" }
+      "post_artifacts": { "ai_description": "…" }
     }
   ]
 }

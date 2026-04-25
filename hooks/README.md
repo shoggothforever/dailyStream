@@ -36,12 +36,6 @@ chmod +x ~/.dailystream/hooks/*.sh
 | `DAILYSTREAM_DESCRIPTION`   | silent 模式下用户预填的描述（非 silent 为空） |
 | `DAILYSTREAM_ARTIFACTS_JSON`| `frame.post_artifacts` 完整 JSON，适合 `jq` 解析 |
 
-### 依赖 `auto_ocr` attachment
-
-| 变量 | 说明 |
-|---|---|
-| `DAILYSTREAM_OCR_TEXT` | Vision 框架识别到的屏幕文字 |
-
 ### 依赖 `ai_analyze` attachment
 
 | 变量 | 说明 |

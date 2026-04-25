@@ -371,15 +371,8 @@ class TestExecutor:
         assert failures[0]["returncode"] == 7
 
     def test_run_command_reads_upstream_artifacts(self, stub_capture, tmp_path):
-        """run_command must see OCR + AI artifacts from earlier POSTs."""
+        """run_command must see AI artifacts from earlier POSTs."""
         from dailystream.capture_modes import executor as _ex
-
-        # Stub auto_ocr to always emit a known string.
-        monkey_ocr_called = {"n": 0}
-
-        def _fake_ocr(path):
-            monkey_ocr_called["n"] += 1
-            return "Hello OCR"
 
         # Stub ai_analyze by directly patching the helper so no anthropic
         # SDK / API key is needed.
@@ -402,7 +395,6 @@ class TestExecutor:
         marker = tmp_path / "env.txt"
         cmd = (
             'printf "%s\\n" '
-            '"ocr=$DAILYSTREAM_OCR_TEXT" '
             '"ai_desc=$DAILYSTREAM_AI_DESCRIPTION" '
             '"ai_cat=$DAILYSTREAM_AI_CATEGORY" '
             '"ai_el=$DAILYSTREAM_AI_KEY_ELEMENTS" '
@@ -422,7 +414,6 @@ class TestExecutor:
                 Attachment(id="run_command",
                            params={"command": cmd, "wait": True,
                                    "timeout_seconds": 5}),
-                Attachment(id="auto_ocr"),
                 Attachment(id="ai_analyze",
                            params={"user_hint": "describe", "wait": True,
                                    "save_to_analysis": False,
@@ -431,13 +422,11 @@ class TestExecutor:
         )
 
         from unittest.mock import patch
-        with patch.object(_ex, "_run_ocr", _fake_ocr), \
-                patch.object(_ex, "_run_ai_analyze", _fake_ai):
+        with patch.object(_ex, "_run_ai_analyze", _fake_ai):
             CaptureExecutor().execute(preset, ctx)
 
         assert marker.exists()
         text = marker.read_text(encoding="utf-8")
-        assert "ocr=Hello OCR" in text
         assert "ai_desc=Cat sitting on keyboard" in text
         assert "ai_cat=other" in text
         assert "ai_el=cat" in text  # multiline newline-joined
@@ -447,8 +436,6 @@ class TestExecutor:
         lines = {k.split("=", 1)[0]: k.split("=", 1)[1]
                  for k in text.strip().splitlines() if "=" in k}
         assert int(lines["artifacts_len"]) > 20
-        # auto_ocr really ran
-        assert monkey_ocr_called["n"] == 1
 
     def test_run_command_artifacts_json_is_parseable(self, stub_capture, tmp_path):
         """DAILYSTREAM_ARTIFACTS_JSON must round-trip through jq/python json."""
@@ -485,11 +472,10 @@ class TestExecutor:
         atts = [
             Attachment(id="run_command", params={"command": "true"}),
             Attachment(id="ai_analyze"),
-            Attachment(id="auto_ocr"),
         ]
         groups = _group_attachments(atts)
         ids = [a.id for a in groups.post]
-        assert ids == ["auto_ocr", "ai_analyze", "run_command"], \
+        assert ids == ["ai_analyze", "run_command"], \
             f"unexpected POST order: {ids}"
 
     def test_hide_cursor_passes_no_cursor_flag(self, stub_capture,

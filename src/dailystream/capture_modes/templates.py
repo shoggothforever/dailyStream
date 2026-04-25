@@ -116,20 +116,20 @@ def _att(aid: str, **params: Any) -> dict:
 
 _BUILTIN_TEMPLATES: list[ModeTemplate] = [
     # -------------------------------------------------------------------
-    # 1. Daily work — OCR everything, AI-assisted descriptions
+    # 1. Daily work — AI-assisted descriptions
     # -------------------------------------------------------------------
     ModeTemplate(
         template_id="daily-work",
         title="Daily Work",
         description=(
             "For office/coding days.  Quick free-selection + full-screen "
-            "shots with OCR pre-filled into the description HUD.  When "
-            "an API key is configured, AI Analyze turns each capture "
-            "into a one-line summary before you even see the HUD."
+            "shots.  When an API key is configured, AI Analyze turns "
+            "each capture into a one-line summary before you even see "
+            "the HUD."
         ),
         author="DailyStream",
         emoji="💼",
-        tags=["work", "daily", "ocr", "ai"],
+        tags=["work", "daily", "ai"],
         prerequisites=[
             "Optional: set ai_api_key in Settings → AI for AI Analyze",
         ],
@@ -144,7 +144,6 @@ _BUILTIN_TEMPLATES: list[ModeTemplate] = [
                     attachments=[
                         _att("single"),
                         _att("flash_menubar"),
-                        _att("auto_ocr"),
                         _att("ai_analyze",
                              user_hint="One concise sentence describing this screenshot.",
                              prefill_hud=True,
@@ -161,7 +160,6 @@ _BUILTIN_TEMPLATES: list[ModeTemplate] = [
                         _att("single"),
                         _att("flash_menubar"),
                         _att("hide_dock"),
-                        _att("auto_ocr"),
                         _att("current_pipeline"),
                     ],
                     hotkey="<cmd>+<shift>+1",
@@ -180,14 +178,14 @@ _BUILTIN_TEMPLATES: list[ModeTemplate] = [
     ),
 
     # -------------------------------------------------------------------
-    # 2. Gaming highlights — silent burst, no OCR to keep FPS
+    # 2. Gaming highlights — silent burst, minimal overhead
     # -------------------------------------------------------------------
     ModeTemplate(
         template_id="gaming-highlights",
         title="Gaming Highlights",
         description=(
-            "3-frame silent burst tuned for game moments — no HUD, no "
-            "OCR, just a menu-bar flash + shutter sound.  Dock is "
+            "3-frame silent burst tuned for game moments — no HUD, "
+            "just a menu-bar flash + shutter sound.  Dock is "
             "hidden, cursor is stripped from the PNG."
         ),
         author="DailyStream",
@@ -249,12 +247,12 @@ _BUILTIN_TEMPLATES: list[ModeTemplate] = [
         title="Meeting Recorder",
         description=(
             "Silent interval capture every 30 seconds for the whole "
-            "meeting.  Each frame is OCR'd and AI-summarised so you "
-            "get a searchable timeline without touching the keyboard."
+            "meeting.  Each frame is AI-summarised so you get a "
+            "searchable timeline without touching the keyboard."
         ),
         author="DailyStream",
         emoji="🎤",
-        tags=["meeting", "interval", "ocr", "ai"],
+        tags=["meeting", "interval", "ai"],
         prerequisites=[
             "Optional: set ai_api_key in Settings → AI for summaries",
             "Start it from the menu when the meeting begins, then "
@@ -272,7 +270,6 @@ _BUILTIN_TEMPLATES: list[ModeTemplate] = [
                         _att("interval", seconds=30, max_count=0),
                         _att("silent_save"),
                         _att("flash_menubar"),
-                        _att("auto_ocr"),
                         _att("ai_analyze",
                              user_hint=(
                                  "One sentence summarising what's happening "
@@ -291,7 +288,6 @@ _BUILTIN_TEMPLATES: list[ModeTemplate] = [
                     "interactive",
                     attachments=[
                         _att("single"),
-                        _att("auto_ocr"),
                         _att("current_pipeline"),
                     ],
                     hotkey="<cmd>+<shift>+w",
@@ -329,7 +325,6 @@ _BUILTIN_TEMPLATES: list[ModeTemplate] = [
                         _att("sound", volume=0.3),
                         _att("hide_cursor"),
                         _att("hide_dock"),
-                        _att("auto_ocr"),
                         _att("current_pipeline"),
                     ],
                     hotkey="<cmd>+1",
