@@ -851,6 +851,27 @@ class CaptureExecutor:
             frame.error = "source returned no file (cancelled or unavailable)"
             return frame
 
+        # Defensive: the source helper already does save_path.exists(),
+        # but some edge cases (permission prompt, user ESC after file
+        # creation) leave behind a zero-byte stub or the path vanishes
+        # before we get here.  Fail fast with a clear reason so the
+        # Swift HUD doesn't get opened on a broken frame.
+        try:
+            if not path.exists() or path.stat().st_size == 0:
+                frame.skipped = True
+                frame.error = (
+                    "screencapture returned without a valid image — "
+                    "was the selection cancelled, or is Screen "
+                    "Recording permission missing for the Python "
+                    "helper?  See ~/Library/Logs/DailyStream/core.log "
+                    "for the raw screencapture exit code."
+                )
+                return frame
+        except OSError as e:
+            frame.skipped = True
+            frame.error = f"cannot stat captured file: {e}"
+            return frame
+
         frame.path = path
 
         # FEEDBACK: runs after the shot so the user knows it happened.

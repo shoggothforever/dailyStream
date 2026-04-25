@@ -1269,6 +1269,14 @@ extension AppState {
             if n > 0 {
                 showToast(title: "\(report.preset_name) saved",
                           subtitle: "\(n) frame\(n == 1 ? "" : "s") → \(pipeline)")
+            } else {
+                // Surface the (first) frame error so user sees *why*
+                // nothing was captured instead of silent silence.
+                let firstError = report.frames
+                    .compactMap { $0.error }
+                    .first ?? "no frames captured"
+                showToast(title: "\(report.preset_name): nothing captured",
+                          subtitle: firstError, kind: .warning)
             }
             return
         }
@@ -1278,7 +1286,24 @@ extension AppState {
         // includes ``ai_analyze`` or ``auto_ocr`` we pre-fill the
         // description so the user just has to tweak or ⏎ to save.
         for frame in report.frames {
-            guard let p = frame.path, !frame.skipped else { continue }
+            if frame.skipped {
+                // Skipped frames (user ESC / screencapture fail) should
+                // NOT trigger the red "Save failed" — they're a normal
+                // cancel path.  Show a neutral hint instead.
+                let msg = frame.error ?? "capture cancelled"
+                showToast(title: "Capture skipped",
+                          subtitle: msg, kind: .info)
+                continue
+            }
+            guard let p = frame.path else { continue }
+            // Guard against phantom paths (file vanished before we
+            // could open the HUD): do not open HUD on a missing file.
+            if !FileManager.default.fileExists(atPath: p) {
+                showToast(title: "Capture incomplete",
+                          subtitle: "Screenshot file was not written: \(URL(fileURLWithPath: p).lastPathComponent). Check Screen Recording permission for DailyStream.",
+                          kind: .warning)
+                continue
+            }
             let fileURL = URL(fileURLWithPath: p)
             // AI description wins over raw OCR because it's already a
             // sentence; fall back to OCR if AI isn't available.

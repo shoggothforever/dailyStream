@@ -1,11 +1,14 @@
 """Input capture module for DailyStream — screenshot and clipboard."""
 
+import logging
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional, Tuple
 
 from .config import now_filename, CLIPBOARD_IMAGE_MARKER
+
+logger = logging.getLogger(__name__)
 
 
 # --- Module-level ObjC overlay class (registered once) ---
@@ -190,32 +193,43 @@ def take_screenshot(
     save_path = save_dir / filename
 
     cursor_flags = ["-C"] if no_cursor else []
+    argv: list[str]
 
     try:
         if region:
-            # Preset region capture: -R x,y,w,h
-            result = subprocess.run(
-                ["screencapture", *cursor_flags, "-R", region, str(save_path)],
-                timeout=10,
-            )
+            argv = ["screencapture", *cursor_flags, "-R", region,
+                    str(save_path)]
+            result = subprocess.run(argv, timeout=10,
+                                    capture_output=True, text=True)
         elif mode == "fullscreen":
-            # Capture entire screen without user interaction
-            result = subprocess.run(
-                ["screencapture", *cursor_flags, str(save_path)],
-                timeout=10,
-            )
+            argv = ["screencapture", *cursor_flags, str(save_path)]
+            result = subprocess.run(argv, timeout=10,
+                                    capture_output=True, text=True)
         else:
-            # Interactive mode: user selects region
-            result = subprocess.run(
-                ["screencapture", *cursor_flags, "-i", str(save_path)],
-                timeout=120,  # generous timeout for user interaction
-            )
+            # Interactive: user drags a selection.  Can take a long time;
+            # rc=0 with no file means the user pressed ESC or clicked
+            # without dragging.
+            argv = ["screencapture", *cursor_flags, "-i", str(save_path)]
+            result = subprocess.run(argv, timeout=120,
+                                    capture_output=True, text=True)
     except subprocess.TimeoutExpired:
+        logger.warning("screencapture timed out (mode=%s, region=%s)",
+                       mode, region)
         return None
 
-    # screencapture returns 0 on success, 1 if user pressed ESC
-    if save_path.exists():
+    # screencapture returns 0 on success, 1 on explicit failure.  User
+    # cancel in interactive mode returns 0 with no file.
+    if save_path.exists() and save_path.stat().st_size > 0:
         return save_path
+
+    # Something went wrong — leave a breadcrumb so users can diagnose.
+    logger.warning(
+        "screencapture produced no file: rc=%s mode=%s region=%s "
+        "argv=%s stdout=%r stderr=%r",
+        result.returncode, mode, region, argv,
+        (result.stdout or "").strip()[:200],
+        (result.stderr or "").strip()[:200],
+    )
     return None
 
 

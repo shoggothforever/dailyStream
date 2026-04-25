@@ -1090,6 +1090,23 @@ def _register_capture_modes_methods(d: Dispatcher, state: _ServerState) -> None:
         for frame in report.frames:
             if frame.path is None or frame.skipped:
                 continue
+            # Sanity-check the file is actually on disk before we commit
+            # an entry pointing at it.  Silent path never had this check
+            # historically, so it could produce "phantom" entries when
+            # screencapture silently failed (macOS permission gotcha,
+            # ESC-during-interactive, etc.).
+            try:
+                frame_path = Path(str(frame.path))
+                if not frame_path.exists() or frame_path.stat().st_size == 0:
+                    logger.warning(
+                        "Silent delivery skipped: file missing or empty at %s",
+                        frame.path,
+                    )
+                    continue
+            except OSError:
+                logger.exception("Silent delivery: cannot stat %s",
+                                 frame.path)
+                continue
             description = ""
             ocr = frame.post_artifacts.get("ocr_text")
             if ocr:
