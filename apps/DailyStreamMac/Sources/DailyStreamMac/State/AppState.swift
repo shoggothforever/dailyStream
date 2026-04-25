@@ -1192,14 +1192,52 @@ extension AppState {
             return
         }
 
-        // Single / burst → one-shot execute_preset
+        let silent = preset.attachments.contains { $0.id == "silent_save" }
+                   || strategyID == "burst"
+
+        // ───────────────────────────────────────────────────────────
+        // Non-silent single shot → route through the battle-tested
+        // ``capture.screenshot`` RPC (the same one ⌘1 has always used).
+        //
+        // The "Capture Mode" executor path kept tripping over a
+        // screencapture quirk: user ESC during interactive selection
+        // returns rc=0 without producing a file, but the executor still
+        // populated ``frame.path`` → Swift opened a HUD → user typed a
+        // description → ``feed.image`` failed with "Image not found"
+        // → the "Save failed" toast.  Rather than patch that chain we
+        // reuse the old RPC which has a clean cancel contract
+        // (``StateConflict -32001``) and is known to work.
+        //
+        // This limits Capture Mode features for non-silent single
+        // presets to: source kind, region, hide_cursor.  Post-processing
+        // attachments (auto_ocr / ai_analyze) are only honoured on the
+        // silent / burst / interval paths for now — they never worked
+        // reliably on the interactive path anyway because the HUD
+        // raced ahead of the async AI call.
+        // ───────────────────────────────────────────────────────────
+        if strategyID == "single" && !silent {
+            // Clipboard preset: just reuse the dedicated clipboard RPC
+            // chain — it already handles text/image dispatch + HUD.
+            if preset.source.kind == .clipboard {
+                await captureClipboard()
+                return
+            }
+            let shotMode = mapSourceKindToShotMode(preset.source.kind)
+            let region = preset.source.kind == .region
+                ? preset.source.region
+                : nil
+            await takeScreenshot(mode: shotMode, region: region,
+                                 presetName: preset.name)
+            return
+        }
+
+        // Silent / burst → full execute_preset flow (silent delivery is
+        // handled end-to-end on the Python side and does not need a HUD).
         struct Params: Encodable, Sendable {
             let mode_id: String
             let preset_id: String
             let silent: Bool
         }
-        let silent = preset.attachments.contains { $0.id == "silent_save" }
-                   || strategyID == "burst"
         iconState = .capturing
         defer { Task { await self.refreshStatus() } }
 
@@ -1215,6 +1253,19 @@ extension AppState {
             return
         } catch {
             showError(title: "Capture failed", error: error)
+        }
+    }
+
+    /// Map the Preset source enum onto the ``screencapture`` mode string
+    /// that ``capture.screenshot`` expects.  ``region`` is passed as a
+    /// separate param so this helper returns the placeholder mode the
+    /// Python side ignores when region is non-nil.
+    private func mapSourceKindToShotMode(_ kind: CaptureSourceKind) -> String {
+        switch kind {
+        case .interactive, .window:  return "interactive"
+        case .fullscreen:            return "fullscreen"
+        case .region:                return "interactive"  // overridden by region
+        case .clipboard:             return "interactive"  // unused for clipboard path
         }
     }
 
@@ -1285,6 +1336,7 @@ extension AppState {
         // captured frame in sequence (usually 1).  When the Preset
         // includes ``ai_analyze`` or ``auto_ocr`` we pre-fill the
         // description so the user just has to tweak or ⏎ to save.
+        var presentedAny = false
         for frame in report.frames {
             if frame.skipped {
                 // Skipped frames (user ESC / screencapture fail) should
@@ -1304,6 +1356,7 @@ extension AppState {
                           kind: .warning)
                 continue
             }
+            presentedAny = true
             let fileURL = URL(fileURLWithPath: p)
             // AI description wins over raw OCR because it's already a
             // sentence; fall back to OCR if AI isn't available.
