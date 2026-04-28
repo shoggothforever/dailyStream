@@ -1,7 +1,13 @@
 // StreamViewerWindow.swift
-// Native Markdown viewer for stream.md — renders the workspace's
-// live markdown file with MarkdownUI and supports opening in an
-// external editor.
+// Native Markdown viewer for workspace stream files.
+//
+// Layout handled here:
+//     <workspace>/stream.md                    ← index page (pure links)
+//     <workspace>/pipelines/<name>/stream.md   ← per-pipeline content
+//
+// The viewer opens the top-level index first, then lets the user drill
+// into each pipeline by clicking the links inside the Markdown. A
+// back-to-index button appears whenever a per-pipeline file is loaded.
 
 import AppKit
 import SwiftUI
@@ -62,14 +68,26 @@ final class StreamViewerWindow {
 @MainActor
 final class StreamViewerViewModel: ObservableObject {
     let workspacePath: String
+
+    /// The Markdown file currently displayed. Defaults to the workspace's
+    /// top-level `stream.md` (the index page); drilling into a pipeline
+    /// link updates this to the matching per-pipeline file.
+    @Published private(set) var currentURL: URL
     @Published var markdownContent: String = ""
     @Published var title: String = "Stream"
+
+    /// True when viewing a per-pipeline file (shows the "back to index" button).
+    var isViewingPipeline: Bool {
+        currentURL.path != indexURL.path
+    }
 
     private var fileMonitor: DispatchSourceFileSystemObject?
     private nonisolated(unsafe) var fileDescriptor: Int32 = -1
 
     init(workspacePath: String) {
         self.workspacePath = workspacePath
+        self.currentURL = URL(fileURLWithPath: workspacePath)
+            .appendingPathComponent("stream.md")
         reload()
         startWatching()
     }
@@ -79,32 +97,61 @@ final class StreamViewerViewModel: ObservableObject {
         fileMonitor = nil
     }
 
-    var streamURL: URL {
+    /// The workspace-level index page.
+    var indexURL: URL {
         URL(fileURLWithPath: workspacePath).appendingPathComponent("stream.md")
     }
 
+    /// Base URL for resolving relative image paths inside the *current* file.
+    /// This is the directory containing `currentURL`, so both the top-level
+    /// index and per-pipeline files render images correctly regardless of
+    /// how many `..` segments appear in the Markdown.
+    var imageBaseURL: URL {
+        currentURL.deletingLastPathComponent()
+    }
+
+    /// Switch the viewer to a different Markdown file (e.g. after the user
+    /// clicks a pipeline link). The file watcher is re-pointed to the new
+    /// file so live updates keep working.
+    func load(_ url: URL) {
+        stopWatching()
+        currentURL = url
+        reload()
+        startWatching()
+    }
+
+    /// Navigate back to the top-level index page.
+    func navigateToIndex() {
+        load(indexURL)
+    }
+
     func reload() {
-        let url = streamURL
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            markdownContent = "*No stream.md found in this workspace.*"
+        guard FileManager.default.fileExists(atPath: currentURL.path) else {
+            if currentURL.path == indexURL.path {
+                markdownContent = "*No stream.md found in this workspace.*"
+            } else {
+                markdownContent = "*File not found: \(currentURL.lastPathComponent)*"
+            }
             return
         }
         do {
-            let raw = try String(contentsOf: url, encoding: .utf8)
+            let raw = try String(contentsOf: currentURL, encoding: .utf8)
             markdownContent = raw
-            // Extract title from first # heading
+            // Extract title from the first `# ` heading.
             if let firstLine = raw.components(separatedBy: .newlines).first,
                firstLine.hasPrefix("# ") {
-                title = String(firstLine.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                title = String(firstLine.dropFirst(2))
+                    .trimmingCharacters(in: .whitespaces)
+            } else {
+                title = currentURL.deletingPathExtension().lastPathComponent
             }
         } catch {
-            markdownContent = "*Failed to read stream.md: \(error.localizedDescription)*"
+            markdownContent = "*Failed to read file: \(error.localizedDescription)*"
         }
     }
 
     func openInEditor() {
-        let url = streamURL
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        guard FileManager.default.fileExists(atPath: currentURL.path) else { return }
 
         // Try VS Code first, then fall back to default .md handler
         let vscodePaths = [
@@ -117,7 +164,7 @@ final class StreamViewerViewModel: ObservableObject {
                 if path.hasSuffix(".app") {
                     let config = NSWorkspace.OpenConfiguration()
                     NSWorkspace.shared.open(
-                        [url],
+                        [currentURL],
                         withApplicationAt: URL(fileURLWithPath: path),
                         configuration: config
                     )
@@ -125,25 +172,25 @@ final class StreamViewerViewModel: ObservableObject {
                     // CLI binary
                     let task = Process()
                     task.executableURL = URL(fileURLWithPath: path)
-                    task.arguments = [url.path]
+                    task.arguments = [currentURL.path]
                     try? task.run()
                 }
                 return
             }
         }
         // Fallback: open with system default
-        NSWorkspace.shared.open(url)
+        NSWorkspace.shared.open(currentURL)
     }
 
     func openInFinder() {
         let dir = URL(fileURLWithPath: workspacePath)
-        NSWorkspace.shared.selectFile(streamURL.path, inFileViewerRootedAtPath: dir.path)
+        NSWorkspace.shared.selectFile(currentURL.path, inFileViewerRootedAtPath: dir.path)
     }
 
     // MARK: - File watching (fsevents)
 
     private func startWatching() {
-        let path = streamURL.path
+        let path = currentURL.path
         fileDescriptor = open(path, O_EVTONLY)
         guard fileDescriptor >= 0 else { return }
         let source = DispatchSource.makeFileSystemObjectSource(
@@ -297,11 +344,6 @@ struct StreamViewerContent: View {
         case top, bottom
     }
 
-    /// Base URL for resolving relative image paths in Markdown.
-    private var imageBaseURL: URL {
-        URL(fileURLWithPath: viewModel.workspacePath, isDirectory: true)
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             toolbar
@@ -313,10 +355,13 @@ struct StreamViewerContent: View {
                         .frame(height: 0)
                         .id(ScrollAnchor.top)
 
-                    Markdown(viewModel.markdownContent, imageBaseURL: imageBaseURL)
+                    Markdown(viewModel.markdownContent, imageBaseURL: viewModel.imageBaseURL)
                         .markdownTheme(.gitHub)
                         .markdownImageProvider(LocalImageProvider())
                         .textSelection(.enabled)
+                        .environment(\.openURL, OpenURLAction { url in
+                            handleLink(url)
+                        })
                         .padding(24)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -325,6 +370,12 @@ struct StreamViewerContent: View {
                         .frame(height: 0)
                         .id(ScrollAnchor.bottom)
                 }
+                // Reset scroll position to top whenever the file switches.
+                .onChange(of: viewModel.currentURL) { _ in
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(ScrollAnchor.top, anchor: .top)
+                    }
+                }
                 .overlay(alignment: .bottomTrailing) {
                     scrollButtons(proxy: proxy)
                 }
@@ -332,6 +383,37 @@ struct StreamViewerContent: View {
         }
         .frame(minWidth: 520, minHeight: 400)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    // MARK: - Link handling
+
+    /// Intercept clicks on relative `.md` links to switch the viewer to
+    /// that file; leave every other scheme (http/https/mailto/absolute
+    /// file://) to the system default handler.
+    private func handleLink(_ url: URL) -> OpenURLAction.Result {
+        // MarkdownUI passes relative URLs through without resolving them;
+        // the parent view did set `imageBaseURL` but link URLs arrive as
+        // bare "pipelines/foo/stream.md". Treat URLs with no scheme — or
+        // an explicit file:// scheme — as local paths to be resolved
+        // against the current file's directory.
+        let rawScheme = url.scheme?.lowercased()
+        if rawScheme == nil || rawScheme == "file" {
+            // Decode percent-encoded path segments so unicode pipeline
+            // names round-trip correctly.
+            let relativePath = url.relativePath.removingPercentEncoding
+                ?? url.relativePath
+            let base = viewModel.imageBaseURL
+            let target = URL(fileURLWithPath: relativePath,
+                             relativeTo: base).standardizedFileURL
+
+            // Only hijack Markdown files; anything else (images, pdfs…)
+            // should open in the default app.
+            if target.pathExtension.lowercased() == "md" {
+                viewModel.load(target)
+                return .handled
+            }
+        }
+        return .systemAction
     }
 
     // MARK: - Scroll-to buttons (floating, bottom-right)
@@ -379,11 +461,25 @@ struct StreamViewerContent: View {
 
     private var toolbar: some View {
         HStack(spacing: 12) {
+            // Back-to-index button appears only when viewing a pipeline file.
+            if viewModel.isViewingPipeline {
+                Button {
+                    viewModel.navigateToIndex()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .buttonStyle(.borderless)
+                .help("Back to index")
+            }
+
             Image(systemName: "doc.richtext")
                 .font(.system(size: 16))
                 .foregroundStyle(DSColor.accent)
             Text(viewModel.title)
                 .font(.system(size: 15, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.middle)
             Spacer()
             Button {
                 viewModel.reload()

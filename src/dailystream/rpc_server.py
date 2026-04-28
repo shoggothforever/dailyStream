@@ -289,6 +289,26 @@ def _register_workspace_methods(d: Dispatcher, state: _ServerState) -> None:
         state._refresh_pipeline_manager()
         if state.wm.meta and getattr(state.wm.meta, "ai_mode", "off") == "realtime":
             state._init_analysis_queue()
+
+        # If this workspace still has the legacy monolithic stream.md,
+        # split it into per-pipeline files in-place before serving any
+        # capture traffic.
+        try:
+            from .note_sync import migrate_monolithic_stream_md
+            migrated = migrate_monolithic_stream_md(target)
+            if migrated:
+                logger.info("workspace.open: migrated legacy stream.md in %s", target)
+        except Exception:  # noqa: BLE001
+            logger.exception("workspace.open: legacy stream.md migration failed")
+
+        # Lazy rebuild of the top-level index page. Cheap (one file, no
+        # per-entry rendering) and keeps the index in sync after manual
+        # edits to context.json or pipeline directory moves.
+        try:
+            _rebuild_workspace_index(state)
+        except Exception:  # noqa: BLE001
+            logger.exception("workspace.open: index rebuild failed")
+
         d.event_bus.publish("workspace.changed", _meta_to_dict(state))
         return _meta_to_dict(state)
 
@@ -355,6 +375,11 @@ def _register_pipeline_methods(d: Dispatcher, state: _ServerState) -> None:
         state.wm.add_pipeline(name)
         # Activate the freshly created pipeline (matches CLI behaviour).
         state.wm.activate_pipeline(name)
+        # New pipeline → refresh top-level index so the link shows up.
+        try:
+            _rebuild_workspace_index(state)
+        except Exception:  # noqa: BLE001
+            logger.exception("pipeline.create: index rebuild failed")
         d.event_bus.publish("workspace.changed", _meta_to_dict(state))
         return {
             "name": name,
@@ -413,6 +438,14 @@ def _register_pipeline_methods(d: Dispatcher, state: _ServerState) -> None:
             if state.wm.meta.active_pipeline == old:
                 state.wm.meta.active_pipeline = new
             state.wm.save_meta()
+        # The per-pipeline stream.md moved with the directory but still
+        # has the old ``# <old_name>`` header → rebuild it from the
+        # context; also refresh the index so link labels update.
+        try:
+            _rebuild_pipeline_stream(state, new)
+            _rebuild_workspace_index(state)
+        except Exception:  # noqa: BLE001
+            logger.exception("pipeline.rename: stream rebuild failed")
         d.event_bus.publish("workspace.changed", _meta_to_dict(state))
         return {"old": old, "new": new}
 
@@ -437,6 +470,11 @@ def _register_pipeline_methods(d: Dispatcher, state: _ServerState) -> None:
                     if state.wm.meta.pipelines else None
                 )
             state.wm.save_meta()
+        # Pipeline removed → refresh top-level index to drop its link.
+        try:
+            _rebuild_workspace_index(state)
+        except Exception:  # noqa: BLE001
+            logger.exception("pipeline.delete: index rebuild failed")
         d.event_bus.publish("workspace.changed", _meta_to_dict(state))
         return {"deleted": name}
 
@@ -527,6 +565,17 @@ def _register_feed_methods(d: Dispatcher, state: _ServerState) -> None:
 
         entry_index = max(0, len(state.pm.get_entries(pipeline_name)) - 1)
 
+        # Refresh the top-level index on the *first* entry of a pipeline.
+        # This keeps the index mostly lazy (high-frequency bursts don't
+        # pay for an index rewrite every frame) while still guaranteeing
+        # that the pipeline link shows up as soon as you capture anything
+        # into a brand-new pipeline.
+        if entry_index == 0:
+            try:
+                _rebuild_workspace_index(state)
+            except Exception:  # noqa: BLE001
+                logger.exception("feed: index rebuild failed")
+
         # realtime AI analysis
         ai_mode = getattr(state.wm.meta, "ai_mode", "off") or "off"
         if ai_mode == "realtime" and input_type in ("image", "url"):
@@ -590,8 +639,10 @@ def _register_feed_methods(d: Dispatcher, state: _ServerState) -> None:
                 except Exception:  # noqa: BLE001
                     logger.warning("Failed to delete image: %s", img_path)
 
-        # Regenerate stream.md from scratch
-        _regenerate_stream_md(state)
+        # Regenerate only the affected pipeline's stream.md, then refresh
+        # the top-level index because entry_count changed.
+        _rebuild_pipeline_stream(state, pipeline)
+        _rebuild_workspace_index(state)
 
         d.event_bus.publish("feed.entry_deleted", {
             "pipeline": pipeline,
@@ -603,15 +654,16 @@ def _register_feed_methods(d: Dispatcher, state: _ServerState) -> None:
     @d.method("feed.update")
     def _update(pipeline: str, entry_index: int,
                 description: str) -> dict:
-        """Update an entry's description and regenerate stream.md."""
+        """Update an entry's description and regenerate that pipeline's stream.md."""
         _require_workspace_loaded()
 
         updated = state.pm.update_entry(pipeline, entry_index, description)
         if updated is None:
             raise NotFound(f"Entry {entry_index} not found in {pipeline}")
 
-        # Regenerate stream.md
-        _regenerate_stream_md(state)
+        # Description change doesn't affect pipeline count → only the
+        # per-pipeline file needs rebuilding; index stays untouched.
+        _rebuild_pipeline_stream(state, pipeline)
 
         d.event_bus.publish("feed.entry_updated", {
             "pipeline": pipeline,
@@ -622,22 +674,35 @@ def _register_feed_methods(d: Dispatcher, state: _ServerState) -> None:
 
 
 def _regenerate_stream_md(state: _ServerState) -> None:
-    """Rebuild stream.md from all pipeline entries."""
-    from .note_sync import LocalMarkdownSyncer
+    """Rebuild all pipeline stream files and the top-level index.
+
+    Kept under the original name so existing call sites continue to
+    work. Internally this now delegates to the per-pipeline rebuild
+    helpers plus the index syncer.
+    """
+    from .note_sync import (
+        LocalMarkdownSyncer,
+        _pipeline_stream_path,
+    )
 
     assert state.wm.workspace_dir is not None
     assert state.wm.meta is not None
     assert state.pm is not None
 
+    ws_dir = state.wm.workspace_dir
     ws_title = state.wm.meta.title or state.wm.meta.workspace_id
-    md_path = state.wm.workspace_dir / "stream.md"
 
-    syncer = LocalMarkdownSyncer(state.wm.workspace_dir, state.config)
-    # Delete and rebuild
-    if md_path.exists():
-        md_path.unlink()
+    syncer = LocalMarkdownSyncer(ws_dir, state.config)
 
     for pname in state.pm.list_pipelines():
+        # Delete the per-pipeline file so sync_entry rebuilds its header.
+        pfile = _pipeline_stream_path(ws_dir, pname)
+        if pfile.exists():
+            try:
+                pfile.unlink()
+            except OSError:
+                logger.warning("failed to unlink %s", pfile)
+
         pmeta = state.pm.get_pipeline_meta(pname)
         for entry in state.pm.get_entries(pname):
             image_path = None
@@ -653,6 +718,65 @@ def _regenerate_stream_md(state: _ServerState) -> None:
                 image_path=image_path,
                 pipeline_meta=pmeta,
             )
+
+    _rebuild_workspace_index(state)
+
+
+def _rebuild_pipeline_stream(state: _ServerState, pipeline_name: str) -> None:
+    """Rebuild a single ``pipelines/<name>/stream.md`` from context.json."""
+    from .note_sync import LocalMarkdownSyncer, _pipeline_stream_path
+
+    assert state.wm.workspace_dir is not None
+    assert state.wm.meta is not None
+    assert state.pm is not None
+
+    ws_dir = state.wm.workspace_dir
+    ws_title = state.wm.meta.title or state.wm.meta.workspace_id
+
+    pfile = _pipeline_stream_path(ws_dir, pipeline_name)
+    if pfile.exists():
+        try:
+            pfile.unlink()
+        except OSError:
+            logger.warning("failed to unlink %s", pfile)
+
+    syncer = LocalMarkdownSyncer(ws_dir, state.config)
+    pmeta = state.pm.get_pipeline_meta(pipeline_name)
+    for entry in state.pm.get_entries(pipeline_name):
+        image_path = None
+        if entry.get("input_type") == "image":
+            image_path = entry.get("input_content")
+        syncer.sync_entry(
+            workspace_title=ws_title,
+            pipeline_name=pipeline_name,
+            timestamp=entry.get("timestamp", ""),
+            input_type=entry.get("input_type", ""),
+            description=entry.get("description", ""),
+            content=entry.get("input_content", ""),
+            image_path=image_path,
+            pipeline_meta=pmeta,
+        )
+
+
+def _rebuild_workspace_index(state: _ServerState) -> None:
+    """Regenerate the top-level ``stream.md`` index page."""
+    from .note_sync import WorkspaceIndexSyncer
+
+    assert state.wm.workspace_dir is not None
+    assert state.wm.meta is not None
+    assert state.pm is not None
+
+    ws_title = state.wm.meta.title or state.wm.meta.workspace_id
+    pipelines: list[dict] = []
+    for pname in state.pm.list_pipelines():
+        pmeta = state.pm.get_pipeline_meta(pname)
+        pipelines.append({
+            "name": pname,
+            "entry_count": len(state.pm.get_entries(pname)),
+            "description": pmeta.get("description", ""),
+            "goal": pmeta.get("goal", ""),
+        })
+    WorkspaceIndexSyncer(state.wm.workspace_dir).rebuild(ws_title, pipelines)
 
 
 def _register_timeline_methods(d: Dispatcher, state: _ServerState) -> None:

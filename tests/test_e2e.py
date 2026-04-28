@@ -46,13 +46,13 @@ class TestFullLifecycle:
             syncer = NoteSyncManager(config, workspace_dir=ws_dir)
             syncer.sync_entry(wm.meta, "research", entry)
 
-        # Verify stream.md
-        md_path = ws_dir / "stream.md"
+        # Verify per-pipeline stream.md
+        md_path = ws_dir / "pipelines" / "research" / "stream.md"
         assert md_path.exists()
         md_text = md_path.read_text(encoding="utf-8")
 
-        assert "# 端到端测试" in md_text
-        assert "## research" in md_text
+        # Pipeline files now carry the pipeline name as their title.
+        assert "# research" in md_text
         assert "文本记录" in md_text
         assert "参考文章" in md_text
         assert "https://example.com/article" in md_text
@@ -100,19 +100,17 @@ class TestFullLifecycle:
         entry3 = pm.add_entry("design", "text", "Color palette", "配色方案")
         syncer.sync_entry(wm.meta, "design", entry3)
 
-        # Verify markdown structure
-        md_text = (ws_dir / "stream.md").read_text(encoding="utf-8")
-        assert "## design" in md_text
-        assert "## coding" in md_text
-        assert "设计稿" in md_text
-        assert "Python 文档" in md_text
+        # Verify per-pipeline markdown structure
+        design_md = (ws_dir / "pipelines" / "design" / "stream.md").read_text(encoding="utf-8")
+        coding_md = (ws_dir / "pipelines" / "coding" / "stream.md").read_text(encoding="utf-8")
+        assert "# design" in design_md
+        assert "# coding" in coding_md
+        assert "设计稿" in design_md
+        assert "Python 文档" in coding_md
 
-        # Design entries should be grouped together
-        design_pos = md_text.index("## design")
-        coding_pos = md_text.index("## coding")
-        palette_pos = md_text.index("配色方案")
-        assert design_pos < palette_pos < coding_pos, \
-            "配色方案 should appear in the design section before coding section"
+        # Design entries grouped in their own file, not bleeding into coding.
+        assert "配色方案" in design_md
+        assert "配色方案" not in coding_md
 
         # End and verify timeline
         report_path = wm.end(config=config)
@@ -149,7 +147,7 @@ class TestFullLifecycle:
         syncer2 = NoteSyncManager(config, workspace_dir=ws_dir)
         syncer2.sync_entry(wm2.meta, "main", entry2)
 
-        md_text = (ws_dir / "stream.md").read_text(encoding="utf-8")
+        md_text = (ws_dir / "pipelines" / "main" / "stream.md").read_text(encoding="utf-8")
         assert "重载前" in md_text
         assert "重载后" in md_text
 

@@ -94,6 +94,7 @@ def build_context(
     pipeline: str = "",
     image_path: Optional[str] = None,
     workspace_dir: Optional[Path] = None,
+    image_base_dir: Optional[Path] = None,
     obsidian_rel_img: Optional[str] = None,
     content_max_len: int = 500,
     ai_analysis: str = "",
@@ -107,7 +108,15 @@ def build_context(
     image_path
         Absolute path to screenshot file (for standard Markdown ``![](…)``).
     workspace_dir
-        If provided, image paths are made relative to this directory.
+        Legacy: if provided *and* ``image_base_dir`` is None, image paths
+        are made relative to this directory (preserves the old behaviour
+        where a single ``stream.md`` lived at workspace root).
+    image_base_dir
+        Preferred: directory of the Markdown file that is going to embed
+        the image. Image paths will be rendered relative to this dir, so
+        a file under ``pipelines/<name>/stream.md`` gets
+        ``../../screenshots/foo.png`` while the top-level index can still
+        pass ``workspace_dir`` to keep the short path.
     obsidian_rel_img
         Pre-computed relative image path for Obsidian wikilinks.
     content_max_len
@@ -137,9 +146,18 @@ def build_context(
         if obsidian_rel_img:
             ctx.image = f"![[{obsidian_rel_img}]]"
         elif image_path:
-            if workspace_dir:
+            base = image_base_dir if image_base_dir is not None else workspace_dir
+            if base is not None:
                 try:
-                    rel = Path(image_path).resolve().relative_to(workspace_dir.resolve())
+                    # os.path.relpath handles ``..`` segments when the
+                    # image lives outside the base (e.g. rendering from
+                    # ``pipelines/<n>/stream.md`` while the screenshot
+                    # is under ``<ws>/screenshots/``).
+                    import os
+                    rel = Path(os.path.relpath(
+                        Path(image_path).resolve(),
+                        base.resolve(),
+                    ))
                 except ValueError:
                     rel = Path(image_path)
                 rel_encoded = url_quote(str(rel.as_posix()), safe="/")

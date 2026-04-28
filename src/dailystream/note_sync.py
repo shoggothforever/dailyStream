@@ -1,11 +1,32 @@
 """Note sync module for DailyStream — local Markdown and Obsidian.
 
-The primary sync target is a Markdown file inside the workspace directory
-itself (``stream.md``).  Images are referenced by relative path so the
-whole workspace folder is self-contained and portable.
+Storage layout (since v2):
 
-Obsidian sync is still supported as an optional secondary backend.
+    <workspace>/
+        stream.md                          ← TOP-LEVEL INDEX (pure index page,
+                                             rebuilt lazily on pipeline
+                                             create/delete/rename and on
+                                             workspace open)
+        pipelines/
+            <pipeline_name>/
+                context.json
+                stream.md                  ← all entries for this pipeline
+        screenshots/
+            ...                            ← workspace-level, shared by all
+                                             pipelines; referenced from
+                                             pipeline stream.md as
+                                             ``../../screenshots/foo.png``
+
+Rationale: a single monolithic ``stream.md`` grew unbounded as captures
+accumulated, which made both the Markdown viewer and delete/update
+regeneration slow. Splitting per-pipeline keeps each file short while
+keeping a discoverable top-level overview.
+
+Obsidian sync is still supported as an optional secondary backend and
+remains a single file per workspace (unchanged).
 """
+
+from __future__ import annotations
 
 import logging
 import re
@@ -24,20 +45,41 @@ from .templates import (
 
 logger = logging.getLogger(__name__)
 
+# ------------------------------------------------------------------
+# Constants
+# ------------------------------------------------------------------
+
+INDEX_FILENAME = "stream.md"
+PIPELINE_STREAM_FILENAME = "stream.md"
+PIPELINES_SUBDIR = "pipelines"
+INDEX_BACKUP_SUFFIX = ".legacy.bak"
+
+
+def _pipeline_stream_path(workspace_dir: Path, pipeline_name: str) -> Path:
+    """Return the per-pipeline ``stream.md`` path."""
+    return workspace_dir / PIPELINES_SUBDIR / pipeline_name / PIPELINE_STREAM_FILENAME
+
+
+def _index_path(workspace_dir: Path) -> Path:
+    """Return the top-level workspace index ``stream.md`` path."""
+    return workspace_dir / INDEX_FILENAME
+
+
+# ------------------------------------------------------------------
+# Per-pipeline syncer
+# ------------------------------------------------------------------
 
 class LocalMarkdownSyncer:
-    """Sync entries to a Markdown file inside the workspace directory.
-    File layout::
-        <workspace>/
-          stream.md            ← this file
-          screenshots/         ← all images live here (workspace-level)
-          pipelines/<name>/
-            context.json
+    """Sync entries to a per-pipeline ``stream.md`` inside
+    ``<workspace>/pipelines/<pipeline_name>/``.
+
+    The top-level ``<workspace>/stream.md`` is *not* touched here — it is
+    handled by :class:`WorkspaceIndexSyncer` and rebuilt on pipeline
+    lifecycle events (create / delete / rename / workspace open).
     """
 
     def __init__(self, workspace_dir: Path, config: Optional[Config] = None) -> None:
         self._ws_dir = workspace_dir
-        self._md_path = workspace_dir / "stream.md"
         self._templates = get_entry_templates(
             config.entry_templates if config else None
         )
@@ -57,21 +99,23 @@ class LocalMarkdownSyncer:
         image_path: Optional[str] = None,
         pipeline_meta: Optional[dict] = None,
     ) -> None:
-        """Insert an entry into ``stream.md`` under its pipeline section.
-
-        Instead of blindly appending to the end of the file, the new entry
-        is inserted at the **end of the matching ``## pipeline_name``
-        section**.  This way switching between pipelines keeps each
-        pipeline's entries grouped together.
+        """Append an entry to ``pipelines/<pipeline_name>/stream.md``.
 
         Parameters
         ----------
+        workspace_title
+            Kept for backward-compat; the per-pipeline file uses the
+            pipeline's own name/emoji/meta as its title instead.
         pipeline_meta
             Optional dict with ``description`` and ``goal`` keys.
-            When a new pipeline heading is created, these are rendered
+            When the per-pipeline file is first created, these render
             as a brief info block right after the heading.
         """
-        # Build template context and render
+        pipeline_md = _pipeline_stream_path(self._ws_dir, pipeline_name)
+        pipeline_md.parent.mkdir(parents=True, exist_ok=True)
+
+        # Image paths are rendered relative to the pipeline md's directory
+        # so the file is self-contained when shared out of the workspace.
         ctx = build_context(
             timestamp=timestamp,
             input_type=input_type,
@@ -80,72 +124,207 @@ class LocalMarkdownSyncer:
             pipeline=pipeline_name,
             image_path=image_path,
             workspace_dir=self._ws_dir,
+            image_base_dir=pipeline_md.parent,
         )
         entry_block = render_entry(self._templates, ctx)
 
-        # ----------------------------------------------------------
-        # Insert into the correct position
-        # ----------------------------------------------------------
-        existing = ""
-        if self._md_path.exists():
-            existing = self._md_path.read_text(encoding="utf-8")
-
-        heading = f"## {pipeline_name}"
-        meta_block = self._format_pipeline_meta(pipeline_meta)
-
-        if not existing:
-            # Brand-new file
-            full = f"# {workspace_title}\n\n{heading}\n"
-            if meta_block:
-                full += f"\n{meta_block}\n"
-            full += f"\n{entry_block}\n"
-            self._md_path.write_text(full, encoding="utf-8")
+        if not pipeline_md.exists():
+            header = self._format_pipeline_header(pipeline_name, pipeline_meta)
+            full = header + "\n" + entry_block + "\n"
+            pipeline_md.write_text(full, encoding="utf-8")
             return
 
-        if heading in existing:
-            # Find the end of this pipeline's section.
-            # A section ends right before the next ``## `` heading or at EOF.
-            heading_pos = existing.index(heading)
-            after_heading = heading_pos + len(heading)
-            # Look for the next ## heading after this one
-            next_heading = re.search(r'^## ', existing[after_heading:], re.MULTILINE)
-            if next_heading:
-                insert_pos = after_heading + next_heading.start()
-                # Insert just before the next heading (keep a blank line)
-                updated = (
-                    existing[:insert_pos].rstrip("\n")
-                    + "\n\n"
-                    + entry_block
-                    + "\n\n"
-                    + existing[insert_pos:]
-                )
-            else:
-                # This is the last section — append at end
-                updated = existing.rstrip("\n") + "\n\n" + entry_block + "\n"
-            self._md_path.write_text(updated, encoding="utf-8")
-        else:
-            # New pipeline — append the heading + meta + entry at the end
-            addition = f"\n{heading}\n"
-            if meta_block:
-                addition += f"\n{meta_block}\n"
-            addition += f"\n{entry_block}\n"
-            updated = existing.rstrip("\n") + "\n" + addition
-            self._md_path.write_text(updated, encoding="utf-8")
+        existing = pipeline_md.read_text(encoding="utf-8")
+        updated = existing.rstrip("\n") + "\n\n" + entry_block + "\n"
+        pipeline_md.write_text(updated, encoding="utf-8")
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def _format_pipeline_meta(meta: Optional[dict]) -> str:
-        """Format pipeline description/goal as a Markdown info block."""
-        if not meta:
-            return ""
-        parts: list[str] = []
-        desc = meta.get("description", "")
-        goal = meta.get("goal", "")
-        if desc:
-            parts.append(f"> **📝 Description**: {desc}")
-        if goal:
-            parts.append(f"> **🎯 Goal**: {goal}")
-        return "\n".join(parts)
+    def _format_pipeline_header(
+        pipeline_name: str, meta: Optional[dict]
+    ) -> str:
+        """Render the heading + optional info block for a pipeline file."""
+        lines: list[str] = [f"# {pipeline_name}", ""]
+        if meta:
+            desc = meta.get("description", "")
+            goal = meta.get("goal", "")
+            if desc:
+                lines.append(f"> **📝 Description**: {desc}")
+            if goal:
+                lines.append(f"> **🎯 Goal**: {goal}")
+            if desc or goal:
+                lines.append("")
+                lines.append("---")
+                lines.append("")
+        return "\n".join(lines)
 
+
+# ------------------------------------------------------------------
+# Top-level index syncer
+# ------------------------------------------------------------------
+
+class WorkspaceIndexSyncer:
+    """Rebuild the top-level ``<workspace>/stream.md`` as a pure index page
+    that links to each pipeline's own ``stream.md``.
+
+    The index is intentionally lazy: it only needs to be regenerated when
+    the set of pipelines changes (pipeline.create / delete / rename) or
+    when a workspace is opened. For individual entry additions, only the
+    per-pipeline file is touched.
+    """
+
+    def __init__(self, workspace_dir: Path) -> None:
+        self._ws_dir = workspace_dir
+
+    def rebuild(
+        self,
+        workspace_title: str,
+        pipelines: list[dict],
+    ) -> None:
+        """Regenerate the top-level index page from scratch.
+
+        Parameters
+        ----------
+        workspace_title
+            Rendered as the ``# {title}`` heading.
+        pipelines
+            Ordered list of dicts; each dict should provide:
+              - ``name``        (required)
+              - ``entry_count`` (int, optional — shown as a suffix)
+              - ``description`` (str, optional)
+              - ``goal``        (str, optional)
+        """
+        index_md = _index_path(self._ws_dir)
+        index_md.parent.mkdir(parents=True, exist_ok=True)
+
+        lines: list[str] = []
+        title = workspace_title.strip() or self._ws_dir.name
+        lines.append(f"# {title}")
+        lines.append("")
+
+        if not pipelines:
+            lines.append("_No pipelines yet._")
+            lines.append("")
+            index_md.write_text("\n".join(lines), encoding="utf-8")
+            return
+
+        lines.append("## 📋 Pipelines")
+        lines.append("")
+        for p in pipelines:
+            name = p.get("name", "")
+            if not name:
+                continue
+            entry_count = p.get("entry_count", 0)
+            # Encode the link target so spaces / unicode names work in
+            # both the native viewer and generic Markdown readers.
+            from urllib.parse import quote as url_quote
+            href = f"{PIPELINES_SUBDIR}/{url_quote(name, safe='')}/{PIPELINE_STREAM_FILENAME}"
+            count_suffix = f" · {entry_count} entr{'y' if entry_count == 1 else 'ies'}"
+            line = f"- [{name}]({href}){count_suffix}"
+            lines.append(line)
+
+            # Optional meta block, indented under the bullet
+            desc = (p.get("description") or "").strip()
+            goal = (p.get("goal") or "").strip()
+            if desc:
+                lines.append(f"    - 📝 {desc}")
+            if goal:
+                lines.append(f"    - 🎯 {goal}")
+        lines.append("")
+
+        index_md.write_text("\n".join(lines), encoding="utf-8")
+
+    def remove_legacy_monolith(self) -> None:
+        """No-op placeholder — kept for symmetry; actual migration lives
+        in :func:`migrate_monolithic_stream_md`.
+        """
+
+
+# ------------------------------------------------------------------
+# Migration: monolithic stream.md → per-pipeline files
+# ------------------------------------------------------------------
+
+_HEADING_RE = re.compile(r"^## (?P<name>.+?)\s*$", re.MULTILINE)
+
+
+def migrate_monolithic_stream_md(workspace_dir: Path) -> bool:
+    """Detect a legacy single-file ``stream.md`` and split its ``## pipeline``
+    sections into per-pipeline files under ``pipelines/<name>/stream.md``.
+
+    Returns True if a migration was performed, False if nothing to do.
+
+    Safety:
+        * Only triggers when the top-level ``stream.md`` contains at least
+          one ``## `` heading AND **no** pipeline already has its own
+          ``stream.md`` file.
+        * The original file is renamed to ``stream.md.legacy.bak`` instead
+          of being deleted, so users can recover if anything goes wrong.
+    """
+    index_md = _index_path(workspace_dir)
+    if not index_md.exists():
+        return False
+
+    pipelines_dir = workspace_dir / PIPELINES_SUBDIR
+    # If any pipeline already has its own stream.md, assume migration
+    # was done previously (or the workspace is new).
+    if pipelines_dir.exists():
+        for sub in pipelines_dir.iterdir():
+            if sub.is_dir() and (sub / PIPELINE_STREAM_FILENAME).exists():
+                return False
+
+    try:
+        raw = index_md.read_text(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        logger.warning("migrate: failed to read %s", index_md)
+        return False
+
+    headings = list(_HEADING_RE.finditer(raw))
+    if not headings:
+        return False
+
+    logger.info(
+        "migrate: splitting legacy %s into %d pipeline files",
+        index_md, len(headings),
+    )
+
+    # Extract each section body (from the line after its heading up to
+    # the line before the next heading, or EOF).
+    for idx, m in enumerate(headings):
+        name = m.group("name").strip()
+        body_start = m.end()
+        body_end = headings[idx + 1].start() if idx + 1 < len(headings) else len(raw)
+        body = raw[body_start:body_end].strip("\n")
+
+        # Rewrite image paths: legacy files used
+        # ``screenshots/foo.png`` (relative to workspace root). The new
+        # per-pipeline file lives two levels deeper, so prepend ``../../``.
+        body = re.sub(
+            r"(!\[[^\]]*\]\()(screenshots/)",
+            r"\1../../\2",
+            body,
+        )
+
+        target = _pipeline_stream_path(workspace_dir, name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        header = f"# {name}\n\n"
+        target.write_text(header + body + "\n", encoding="utf-8")
+
+    # Back up the old monolith so users can recover if desired.
+    backup = index_md.with_suffix(index_md.suffix + INDEX_BACKUP_SUFFIX)
+    try:
+        index_md.rename(backup)
+        logger.info("migrate: backed up legacy index → %s", backup.name)
+    except Exception:  # noqa: BLE001
+        logger.warning("migrate: could not rename legacy index to %s", backup)
+    return True
+
+
+# ------------------------------------------------------------------
+# Obsidian syncer (unchanged — still one file per workspace)
+# ------------------------------------------------------------------
 
 class ObsidianSyncer:
     """Sync entries to Obsidian vault as Markdown.
@@ -223,6 +402,10 @@ class ObsidianSyncer:
             f.write("\n".join(lines))
 
 
+# ------------------------------------------------------------------
+# Unified facade
+# ------------------------------------------------------------------
+
 class NoteSyncManager:
     """Unified sync interface."""
 
@@ -251,13 +434,14 @@ class NoteSyncManager:
         ----------
         pipeline_meta
             Optional dict with ``description`` and ``goal`` keys.
-            Passed through to ``LocalMarkdownSyncer`` so that a new
-            pipeline heading includes the info block.
+            Passed through to ``LocalMarkdownSyncer`` so that the
+            per-pipeline stream file's header includes the info block on
+            first creation.
         """
         if isinstance(entry, dict):
             entry_data = entry
         else:
-            entry_data = asdict(entry) if hasattr(entry, '__dataclass_fields__') else {
+            entry_data = asdict(entry) if hasattr(entry, "__dataclass_fields__") else {
                 "timestamp": entry.timestamp,
                 "input_type": entry.input_type,
                 "input_content": entry.input_content,
