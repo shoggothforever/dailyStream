@@ -9,6 +9,12 @@
 //      arrive.  Images load asynchronously via the shared
 //      ``LocalImageView`` / ``LocalImageCache`` so scrolling stays
 //      smooth even for 80+ screenshots.
+//   3. The timeline itself is **pipeline-segmented**: a tab bar mirrors
+//      StreamViewer's "index → per-pipeline" UX, so at most one
+//      pipeline's entries are materialised at a time.  This is what
+//      finally tames the 80+ screenshot workspaces — LazyVStack alone
+//      still builds the full data source, but filtering down to ~20
+//      rows per tab cuts both initial render and scroll diffing.
 //
 // The older ``timeline.export_structured`` full-payload path is still
 // supported via ``show(data:)`` for the manual ``showDailyReview`` menu
@@ -88,12 +94,78 @@ final class DailyReviewVM: ObservableObject {
     /// Pipelines whose entries haven't arrived yet.  Drives the
     /// "loading …" affordance in the timeline.
     @Published var loadingPipelines: Set<String> = []
+
+    /// Which pipeline's entries the timeline currently shows.  Mirrors
+    /// the StreamViewer's "index → per-pipeline" navigation but using
+    /// a tab bar instead of hyperlinks, because the Daily Review
+    /// window also wants the hero/stats/summary sections to stay
+    /// visible above the switcher.
+    @Published var selectedTab: PipelineTab = .all
     let bridge: CoreBridge
+
+    /// Tab options shown in the picker.  The order is stable across
+    /// streaming appends because we derive it from
+    /// ``workspace.pipelines`` rather than from whatever arrived first.
+    enum PipelineTab: Hashable {
+        case all
+        case pipeline(String)
+    }
+
+    /// Pipelines in canonical display order.
+    var availablePipelines: [String] {
+        data.workspace.pipelines
+    }
+
+    /// Entries filtered by the current tab.
+    var filteredEntries: [ReviewData.Entry] {
+        switch selectedTab {
+        case .all:
+            return data.entries
+        case .pipeline(let name):
+            return data.entries.filter { $0.pipeline == name }
+        }
+    }
+
+    /// Cached lookup for tab badges.
+    func entryCount(for pipeline: String) -> Int {
+        // Prefer the authoritative count from the summary (arrives
+        // immediately) so the badge is accurate before entries stream
+        // in.  Fall back to counting loaded entries when the summary
+        // didn't include that pipeline (shouldn't happen in practice).
+        if let ps = data.pipeline_summaries?.first(where: { $0.name == pipeline }) {
+            return ps.entry_count
+        }
+        return data.entries.reduce(0) { $0 + ($1.pipeline == pipeline ? 1 : 0) }
+    }
+
+    func isLoading(_ pipeline: String) -> Bool {
+        loadingPipelines.contains(pipeline)
+    }
+
+    /// Goal + description for the currently-selected pipeline tab,
+    /// if any.  Used to render a small subtitle above the timeline.
+    var currentPipelineSummary: ReviewData.PipelineSummary? {
+        guard case .pipeline(let name) = selectedTab,
+              let ps = data.pipeline_summaries?.first(where: { $0.name == name })
+        else { return nil }
+        return ps
+    }
 
     /// Initialise from a full ``ReviewData`` payload (legacy).
     init(data: ReviewData, bridge: CoreBridge) {
         self.data = data
         self.bridge = bridge
+        // Default to the first pipeline when there is more than one —
+        // the "All" view is expensive for 80+ entry workspaces and
+        // defeats the whole point of segmenting the timeline.  Keep
+        // ``.all`` as the default only when there's a single pipeline
+        // (segmenting would just add chrome for no benefit).
+        if data.workspace.pipelines.count > 1,
+           let first = data.workspace.pipelines.first {
+            self.selectedTab = .pipeline(first)
+        } else {
+            self.selectedTab = .all
+        }
     }
 
     /// Initialise from a summary-only payload.  Timeline is empty until
@@ -110,6 +182,13 @@ final class DailyReviewVM: ObservableObject {
         // Mark every pipeline as "still loading" so the UI can show a
         // placeholder row until its entries land.
         self.loadingPipelines = Set(summary.workspace.pipelines)
+        // Same default-tab rule as the legacy init (see above).
+        if summary.workspace.pipelines.count > 1,
+           let first = summary.workspace.pipelines.first {
+            self.selectedTab = .pipeline(first)
+        } else {
+            self.selectedTab = .all
+        }
     }
 
     /// Called from ``AppState.endWorkspace`` once a pipeline's entries
@@ -377,25 +456,152 @@ struct DailyReviewContent: View {
     // MARK: - Timeline waterfall
 
     private var timelineSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Text("Timeline")
-                    .font(.system(size: 20, weight: .semibold))
-                // When pipelines are still streaming in, show a
-                // compact spinner so the user knows more rows are
-                // coming rather than thinking the view is empty.
-                if !vm.loadingPipelines.isEmpty {
-                    HStack(spacing: 4) {
-                        ProgressView()
-                            .scaleEffect(0.5)
-                            .frame(width: 12, height: 12)
-                        Text("loading \(vm.loadingPipelines.count) pipeline\(vm.loadingPipelines.count == 1 ? "" : "s")…")
-                            .font(DSFont.caption)
-                            .foregroundStyle(.tertiary)
-                    }
+        VStack(alignment: .leading, spacing: 10) {
+            timelineHeader
+            pipelineTabBar
+            if case .pipeline = vm.selectedTab,
+               let ps = vm.currentPipelineSummary {
+                pipelineContextCard(ps)
+            }
+            timelineBody
+        }
+    }
+
+    private var timelineHeader: some View {
+        HStack(spacing: 8) {
+            Text("Timeline")
+                .font(.system(size: 20, weight: .semibold))
+            // Only show the global spinner in the "All" view; the
+            // per-pipeline spinners on the tab bar already convey
+            // loading state when a single pipeline is selected.
+            if case .all = vm.selectedTab, !vm.loadingPipelines.isEmpty {
+                HStack(spacing: 4) {
+                    ProgressView()
+                        .scaleEffect(0.5)
+                        .frame(width: 12, height: 12)
+                    Text("loading \(vm.loadingPipelines.count) pipeline\(vm.loadingPipelines.count == 1 ? "" : "s")…")
+                        .font(DSFont.caption)
+                        .foregroundStyle(.tertiary)
                 }
             }
-            ForEach(data.entries) { entry in
+        }
+    }
+
+    /// Tab bar that mirrors StreamViewer's per-pipeline navigation.
+    /// Hidden when there's only one pipeline (the "All" view is
+    /// already the right answer).
+    @ViewBuilder
+    private var pipelineTabBar: some View {
+        if vm.availablePipelines.count > 1 {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    tabChip(
+                        title: "All",
+                        count: data.entries.count,
+                        loading: !vm.loadingPipelines.isEmpty,
+                        color: .secondary,
+                        isSelected: vm.selectedTab == .all
+                    ) {
+                        vm.selectedTab = .all
+                    }
+                    ForEach(vm.availablePipelines, id: \.self) { name in
+                        tabChip(
+                            title: name,
+                            count: vm.entryCount(for: name),
+                            loading: vm.isLoading(name),
+                            color: pipelineColor(name),
+                            isSelected: vm.selectedTab == .pipeline(name)
+                        ) {
+                            vm.selectedTab = .pipeline(name)
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    private func tabChip(title: String,
+                         count: Int,
+                         loading: Bool,
+                         color: Color,
+                         isSelected: Bool,
+                         action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(color)
+                    .frame(width: 6, height: 6)
+                Text(title)
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                Text("\(count)")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                if loading {
+                    ProgressView()
+                        .scaleEffect(0.4)
+                        .frame(width: 8, height: 8)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                Capsule()
+                    .fill(isSelected
+                          ? DSColor.accent.opacity(0.18)
+                          : Color.secondary.opacity(0.08))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(isSelected ? DSColor.accent : .clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Small contextual card under the tab bar showing the current
+    /// pipeline's description + goal, so the user has the same
+    /// orientation the pipeline summaries section provides for the
+    /// "All" view.
+    private func pipelineContextCard(_ ps: ReviewData.PipelineSummary) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if let desc = ps.description, !desc.isEmpty {
+                Text(desc)
+                    .font(DSFont.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let goal = ps.goal, !goal.isEmpty {
+                Text("🎯 \(goal)")
+                    .font(DSFont.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var timelineBody: some View {
+        let entries = vm.filteredEntries
+        if entries.isEmpty {
+            // Placeholder shown either while the selected pipeline is
+            // still loading, or when it genuinely has no entries.
+            HStack(spacing: 8) {
+                if case .pipeline(let name) = vm.selectedTab,
+                   vm.isLoading(name) {
+                    ProgressView().scaleEffect(0.6)
+                    Text("Loading \(name)…")
+                        .font(DSFont.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("No entries")
+                        .font(DSFont.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 12)
+        } else {
+            ForEach(entries) { entry in
                 entryRow(entry)
             }
         }
@@ -565,7 +771,11 @@ struct DailyReviewContent: View {
 
     @ViewBuilder
     private var pipelineSummariesSection: some View {
-        if let summaries = data.pipeline_summaries, !summaries.isEmpty {
+        // Only show the list view in "All" mode — the per-tab header
+        // already surfaces description + goal for a single pipeline,
+        // and repeating the info below would be noisy.
+        if case .all = vm.selectedTab,
+           let summaries = data.pipeline_summaries, !summaries.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Pipelines")
                     .font(.system(size: 20, weight: .semibold))
