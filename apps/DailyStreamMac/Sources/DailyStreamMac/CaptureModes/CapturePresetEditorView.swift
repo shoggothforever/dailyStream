@@ -410,7 +410,14 @@ struct CapturePresetEditorView: View {
     // MARK: - Region picker integration -------------------------------
 
     private func pickRegion() async {
-        if let r = await state.selectRegion() {
+        // Hide the Designer while the user drags out a region so the
+        // window doesn't cover the content they want to align to
+        // (e.g. a fullscreen video).  It's restored automatically
+        // after selection / cancel.
+        let picked = await CaptureModeDesignerWindow.shared.withHiddenWindow {
+            await state.selectRegion()
+        }
+        if let r = picked {
             draft.source.region = r
         }
     }

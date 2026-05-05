@@ -32,8 +32,7 @@ final class CaptureModeDesignerWindow {
         }
         if let existing = window {
             existing.contentViewController = NSHostingController(rootView: content)
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            Self.presentWithoutLeavingFullScreenSpace(existing)
             return
         }
         let w = NSWindow(
@@ -46,13 +45,64 @@ final class CaptureModeDesignerWindow {
         w.isReleasedWhenClosed = false
         w.center()
         w.contentViewController = NSHostingController(rootView: content)
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        // Allow the Designer to appear on top of a full-screen video
+        // (e.g. QuickTime / Safari / IINA in native fullscreen Space)
+        // instead of yanking the user back to the desktop Space.
+        //
+        // * `.canJoinAllSpaces`   — show on whichever Space is front.
+        // * `.fullScreenAuxiliary`— treat as auxiliary UI for any
+        //                           fullscreen Space so we don't cause
+        //                           that Space to exit fullscreen.
+        w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        // `.floating` keeps us above the front app's content window
+        // without elevating to the shielding level used by the region
+        // overlay.
+        w.level = .floating
+        // Regular windows (i.e. .titled) accept first-responder
+        // automatically; we just want to avoid the global activation
+        // that would switch Spaces.
+        w.hidesOnDeactivate = false
+        Self.presentWithoutLeavingFullScreenSpace(w)
         self.window = w
     }
 
     func close() {
         window?.orderOut(nil)
+    }
+
+    /// Bring ``win`` to front *without* calling
+    /// ``NSApp.activate(ignoringOtherApps:)`` which on a
+    /// `.accessory`-policy app triggers a Space switch and kicks
+    /// fullscreen video players (QuickTime, Safari, IINA, …) out of
+    /// their fullscreen Space.  Using ``orderFrontRegardless`` +
+    /// ``makeKey`` keeps the window visible on the current Space while
+    /// still letting it receive keyboard input.
+    private static func presentWithoutLeavingFullScreenSpace(_ win: NSWindow) {
+        win.orderFrontRegardless()
+        win.makeKey()
+    }
+
+    /// Run `operation` with the Designer window temporarily hidden so
+    /// it doesn't occlude the screen during a fullscreen region
+    /// selection.  The window is restored to its previous visibility
+    /// after the operation finishes (including on cancel / throw).
+    ///
+    /// We use `orderOut` instead of `miniaturize` because
+    /// miniaturizing would bounce the user out of the current
+    /// (possibly fullscreen) Space on restore.
+    func withHiddenWindow<T>(_ operation: () async -> T) async -> T {
+        let w = window
+        let wasVisible = w?.isVisible ?? false
+        if wasVisible {
+            w?.orderOut(nil)
+        }
+        let result = await operation()
+        if wasVisible {
+            // Restore on the current Space without triggering a
+            // Space switch.
+            if let w { Self.presentWithoutLeavingFullScreenSpace(w) }
+        }
+        return result
     }
 }
 

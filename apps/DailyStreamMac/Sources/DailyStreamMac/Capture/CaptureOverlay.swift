@@ -57,10 +57,20 @@ fileprivate final class OverlayCoordinator {
         for screen in NSScreen.screens {
             let win = createWindow(for: screen)
             windows.append(win)
-            win.makeKeyAndOrderFront(nil)
+            // `orderFrontRegardless` avoids a Space switch when the
+            // frontmost app is in fullscreen (native fullscreen Space).
+            // Combined with the `.canJoinAllSpaces` collectionBehavior
+            // set below, the overlay paints on top of the fullscreen
+            // video without kicking it out of its Space.
+            win.orderFrontRegardless()
+            win.makeKey()
         }
-        // Ensure our overlay is frontmost
-        NSApp.activate(ignoringOtherApps: true)
+        // NOTE: intentionally NOT calling
+        // `NSApp.activate(ignoringOtherApps: true)` — on a
+        // `.accessory`-policy app that triggers a Space switch and the
+        // user would see their fullscreen player snap back to desktop.
+        // The shielding-level overlay + makeKey is enough to receive
+        // key events.
     }
 
     private func createWindow(for screen: NSScreen) -> NSWindow {
@@ -73,6 +83,17 @@ fileprivate final class OverlayCoordinator {
             screen: screen
         )
         win.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()))
+        // Make the overlay show on *whichever* Space is currently
+        // front, including native-fullscreen Spaces hosting a video
+        // player.  Without this the window is only visible on the
+        // desktop Space and the OS would switch Spaces to show it,
+        // collapsing the user's fullscreen session.
+        win.collectionBehavior = [
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .stationary,
+            .ignoresCycle,
+        ]
         win.isOpaque = false
         win.backgroundColor = .clear
         win.ignoresMouseEvents = false
