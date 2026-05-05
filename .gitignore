@@ -26,6 +26,10 @@ nohup.out
 # CodeBuddy internal data
 .codebuddy/
 
+# Local user-data backups produced by relocate_workspaces.py / manual snapshots
+.dailystream-backup-*.tar.gz
+.dailystream-backup-*/
+
 # Swift / Xcode
 apps/DailyStreamMac/Frameworks/
 apps/DailyStreamMac/.build/

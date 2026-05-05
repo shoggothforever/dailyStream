@@ -632,7 +632,11 @@ def _register_feed_methods(d: Dispatcher, state: _ServerState) -> None:
 
         # Optionally delete the screenshot file
         if delete_file and removed.get("input_type") == "image":
-            img_path = Path(removed.get("input_content", ""))
+            from .pipeline import resolve_entry_path
+            img_path = resolve_entry_path(
+                state.wm.workspace_dir,
+                removed.get("input_content", ""),
+            )
             if img_path.exists():
                 try:
                     img_path.unlink()
@@ -707,7 +711,10 @@ def _regenerate_stream_md(state: _ServerState) -> None:
         for entry in state.pm.get_entries(pname):
             image_path = None
             if entry.get("input_type") == "image":
-                image_path = entry.get("input_content")
+                from .pipeline import resolve_entry_path
+                image_path = str(resolve_entry_path(
+                    ws_dir, entry.get("input_content", ""),
+                ))
             syncer.sync_entry(
                 workspace_title=ws_title,
                 pipeline_name=pname,
@@ -725,6 +732,7 @@ def _regenerate_stream_md(state: _ServerState) -> None:
 def _rebuild_pipeline_stream(state: _ServerState, pipeline_name: str) -> None:
     """Rebuild a single ``pipelines/<name>/stream.md`` from context.json."""
     from .note_sync import LocalMarkdownSyncer, _pipeline_stream_path
+    from .pipeline import resolve_entry_path
 
     assert state.wm.workspace_dir is not None
     assert state.wm.meta is not None
@@ -745,7 +753,9 @@ def _rebuild_pipeline_stream(state: _ServerState, pipeline_name: str) -> None:
     for entry in state.pm.get_entries(pipeline_name):
         image_path = None
         if entry.get("input_type") == "image":
-            image_path = entry.get("input_content")
+            image_path = str(resolve_entry_path(
+                ws_dir, entry.get("input_content", ""),
+            ))
         syncer.sync_entry(
             workspace_title=ws_title,
             pipeline_name=pipeline_name,
@@ -854,8 +864,11 @@ def _register_ai_methods(d: Dispatcher, state: _ServerState) -> None:
         content = entry.get("input_content", "")
         hint = entry.get("description", "")
         result = None
-        if itype == "image" and Path(content).exists():
-            result = analyzer.analyze_image(Path(content), user_hint=hint)
+        if itype == "image":
+            from .pipeline import resolve_entry_path
+            img = resolve_entry_path(state.wm.workspace_dir, content)
+            if img.exists():
+                result = analyzer.analyze_image(img, user_hint=hint)
         elif itype == "url":
             result = analyzer.analyze_url(content, user_hint=hint)
         else:

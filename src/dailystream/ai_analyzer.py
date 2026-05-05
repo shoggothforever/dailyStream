@@ -479,15 +479,22 @@ class ImageAnalyzer:
         entries: list[dict],
         pipeline_name: str = "",
         pipeline_context: str = "",
+        workspace_dir: Optional[Path] = None,
     ) -> list[Optional[AnalysisResult]]:
         """Analyse a list of entries one by one.
 
         For ``daily_report`` mode the *pipeline_context* string is
         included so the AI can see the bigger picture.
 
+        ``workspace_dir`` (when provided) is used to resolve
+        workspace-relative ``input_content`` paths produced by newer
+        versions; legacy absolute paths still work without it.
+
         Returns a list of results (``None`` for entries that cannot
         be analysed or that failed).
         """
+        from .pipeline import resolve_entry_path
+
         results: list[Optional[AnalysisResult]] = []
         for entry in entries:
             itype = entry.get("input_type", "")
@@ -495,12 +502,18 @@ class ImageAnalyzer:
             user_hint = entry.get("description", "")
 
             result: Optional[AnalysisResult] = None
-            if itype == "image" and Path(content).exists():
-                result = self.analyze_image(
-                    Path(content),
-                    user_hint=user_hint,
-                    context=pipeline_context,
+            if itype == "image":
+                img = (
+                    resolve_entry_path(workspace_dir, content)
+                    if workspace_dir is not None
+                    else Path(content)
                 )
+                if img.exists():
+                    result = self.analyze_image(
+                        img,
+                        user_hint=user_hint,
+                        context=pipeline_context,
+                    )
             elif itype == "url":
                 result = self.analyze_url(
                     content,
@@ -691,10 +704,13 @@ class AnalysisQueue:
 
         result: Optional[AnalysisResult] = None
 
-        if input_type == "image" and Path(content).exists():
-            result = self._analyzer.analyze_image(
-                Path(content), user_hint=user_hint
-            )
+        if input_type == "image":
+            from .pipeline import resolve_entry_path
+            img = resolve_entry_path(self._workspace_dir, content)
+            if img.exists():
+                result = self._analyzer.analyze_image(
+                    img, user_hint=user_hint
+                )
         elif input_type == "url":
             result = self._analyzer.analyze_url(content, user_hint=user_hint)
         else:
@@ -782,6 +798,7 @@ def batch_analyze_workspace(
                 batch_entries,
                 pipeline_name=pipeline_name,
                 pipeline_context=pipeline_context,
+                workspace_dir=workspace_dir,
             )
 
             for (idx, entry), result in zip(batch, results):

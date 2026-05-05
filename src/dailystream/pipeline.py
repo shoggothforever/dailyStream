@@ -9,12 +9,56 @@ from .config import read_json, write_json, now_iso, now_filename
 
 @dataclass
 class PipelineEntry:
-    """A single entry in a pipeline."""
+    """A single entry in a pipeline.
+
+    For ``input_type == "image"`` the ``input_content`` is the path to
+    the screenshot.  Since v0.X this is *workspace-relative* whenever the
+    image lives inside the workspace (e.g. ``screenshots/foo.png``), so
+    that the whole workspace directory remains portable.  Older data and
+    user-configured screenshot paths outside the workspace continue to
+    use absolute paths and are still loaded transparently — see
+    :func:`resolve_entry_path`.
+    """
 
     timestamp: str
     input_type: str  # "url" | "image" | "text"
-    input_content: str  # file path, URL, or text content
+    input_content: str  # file path (rel/abs), URL, or text content
     description: str
+
+
+def resolve_entry_path(workspace_dir: Path, input_content: str) -> Path:
+    """Return an absolute filesystem path for an entry's image content.
+
+    Accepts both *legacy absolute* paths (e.g. data created before the
+    relative-path refactor) and *workspace-relative* paths (e.g.
+    ``screenshots/foo.png``).  Used by every consumer that needs to
+    read / unlink / exists-check the image file.
+    """
+    p = Path(input_content)
+    if p.is_absolute():
+        return p
+    return Path(workspace_dir) / p
+
+
+def _to_relative_if_inside(workspace_dir: Path, abs_path: str) -> str:
+    """Convert ``abs_path`` to a workspace-relative POSIX path *if* it
+    lives inside ``workspace_dir``; otherwise return it unchanged.
+
+    Used by :meth:`PipelineManager.add_entry` to keep new data portable
+    while still supporting the case where the user configured
+    ``screenshot_save_path`` to point outside the workspace (e.g. an
+    iCloud-shared folder).
+    """
+    if not abs_path:
+        return abs_path
+    p = Path(abs_path)
+    if not p.is_absolute():
+        return abs_path  # already relative — leave it alone
+    try:
+        rel = p.resolve().relative_to(Path(workspace_dir).resolve())
+    except (ValueError, OSError):
+        return abs_path  # outside workspace → keep absolute (intentional)
+    return rel.as_posix()
 
 
 class PipelineManager:
@@ -110,7 +154,19 @@ class PipelineManager:
         input_content: str,
         description: str,
     ) -> PipelineEntry:
-        """Add an entry to a pipeline. Returns the created entry."""
+        """Add an entry to a pipeline. Returns the created entry.
+
+        For image entries, ``input_content`` is normalised to a
+        workspace-relative POSIX path whenever the file lives inside
+        the workspace, so the workspace directory remains portable
+        (move it / share it / sync it via iCloud and entries still
+        resolve).  Paths outside the workspace are preserved as-is.
+        """
+        if input_type == "image":
+            input_content = _to_relative_if_inside(
+                self._workspace_dir, input_content,
+            )
+
         entry = PipelineEntry(
             timestamp=now_iso(),
             input_type=input_type,

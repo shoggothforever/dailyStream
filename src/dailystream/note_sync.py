@@ -453,7 +453,20 @@ class NoteSyncManager:
 
         image_path = None
         if entry_data["input_type"] == "image":
-            image_path = entry_data["input_content"]
+            # Resolve workspace-relative paths to absolute so downstream
+            # consumers (image copy / template rendering) can read them.
+            raw = entry_data["input_content"]
+            from .pipeline import resolve_entry_path
+            if self._local is not None:
+                image_path = str(resolve_entry_path(self._local._ws_dir, raw))
+            elif self._obsidian is not None:
+                # Obsidian path: relative paths must be resolved against the
+                # original workspace dir; without LocalMarkdownSyncer we have
+                # no ws_dir handle, so fall through with raw value (legacy
+                # behaviour — old data is absolute anyway).
+                image_path = raw
+            else:
+                image_path = raw
 
         # Local Markdown (always, when workspace_dir was provided)
         if self._local:

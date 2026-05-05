@@ -174,8 +174,11 @@ def feed(content: str, desc: str, input_type: str):
                 entry_index = max(0, len(entries) - 1)
 
                 result = None
-                if input_type == "image" and Path(content).exists():
-                    result = analyzer.analyze_image(Path(content), user_hint=desc)
+                if input_type == "image":
+                    from .pipeline import resolve_entry_path
+                    img = resolve_entry_path(wm.workspace_dir, content)
+                    if img.exists():
+                        result = analyzer.analyze_image(img, user_hint=desc)
                 elif input_type == "url":
                     result = analyzer.analyze_url(content, user_hint=desc)
 
@@ -258,8 +261,11 @@ def analyze(force: bool):
             click.echo(f"  🔍 [{pipeline_name}] #{idx} ({itype}): {desc[:40] or content[:40]}...", nl=False)
 
             result = None
-            if itype == "image" and Path(content).exists():
-                result = analyzer.analyze_image(Path(content), user_hint=desc)
+            if itype == "image":
+                from .pipeline import resolve_entry_path
+                img = resolve_entry_path(wm.workspace_dir, content)
+                if img.exists():
+                    result = analyzer.analyze_image(img, user_hint=desc)
             elif itype == "url":
                 result = analyzer.analyze_url(content, user_hint=desc)
 
