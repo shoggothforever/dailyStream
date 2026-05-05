@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import Config, read_json, SHORT_TIME_PATTERN
-from .pipeline import PipelineManager
+from .pipeline import PipelineManager, resolve_entry_path
 from .templates import build_context, render_entry, get_timeline_templates
 
 
@@ -138,7 +138,16 @@ def generate_timeline(
             description=desc,
             content=content,
             pipeline=pipe,
-            image_path=content if itype == "image" else None,
+            # Resolve workspace-relative image paths to absolute so that
+            # ``build_context`` can compute a correct link relative to
+            # ``image_base_dir`` (= workspace root, where this
+            # ``timeline_report.md`` file lives).
+            image_path=(
+                str(resolve_entry_path(workspace_dir, content))
+                if itype == "image" and content
+                else None
+            ),
+            image_base_dir=workspace_dir,
             content_max_len=200,
             ai_analysis=ai_desc,
             ai_category=ai_cat,
@@ -290,12 +299,22 @@ def generate_structured(
         itype = entry.get("input_type", "?")
         type_counts[itype] = type_counts.get(itype, 0) + 1
 
+        # For image entries ``input_content`` is a workspace-relative
+        # path (newer data) or an absolute path (legacy).  Swift clients
+        # consume this via ``NSImage(contentsOfFile:)`` which needs an
+        # absolute filesystem path, so we always resolve it here.
+        raw_content = entry.get("input_content", "")
+        if itype == "image" and raw_content:
+            resolved = str(resolve_entry_path(workspace_dir, raw_content))
+        else:
+            resolved = raw_content
+
         e: dict = {
             "timestamp": ts,
             "pipeline": pipe,
             "input_type": itype,
             "description": entry.get("description", ""),
-            "input_content": entry.get("input_content", ""),
+            "input_content": resolved,
             "ai_description": "",
             "ai_category": "",
             "ai_elements": [],

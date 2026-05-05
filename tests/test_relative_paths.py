@@ -188,3 +188,67 @@ class TestWorkspacePortability:
         assert resolved.exists(), \
             "image must resolve under the new workspace location"
         assert resolved == new_ws / "screenshots" / "p.png"
+
+
+# ── timeline output surfaces ─────────────────────────────────────────
+
+
+class TestTimelineOutputsAbsoluteImagePaths:
+    """``timeline.export_structured`` feeds the Swift Daily Review window
+    which reads images via ``NSImage(contentsOfFile:)`` — that API does
+    NOT resolve workspace-relative paths, so the structured data MUST
+    expose absolute paths even though we store relative ones on disk."""
+
+    def test_generate_structured_resolves_image_to_absolute(self, workspace_with_pipeline):
+        from dailystream.timeline import generate_structured
+
+        wm, pm, pipe = workspace_with_pipeline
+        ws_dir = wm.workspace_dir
+
+        img = _make_png(ws_dir / "screenshots" / "abc.png")
+        pm.add_entry(pipe, "image", str(img), "shot")
+
+        data = generate_structured(ws_dir, wm.meta)
+        assert data is not None
+
+        image_entries = [e for e in data["entries"] if e["input_type"] == "image"]
+        assert len(image_entries) == 1
+        content = image_entries[0]["input_content"]
+        assert Path(content).is_absolute(), (
+            f"expected absolute path for Swift consumption, got: {content!r}"
+        )
+        assert Path(content).exists()
+
+    def test_generate_structured_preserves_text_and_url(self, workspace_with_pipeline):
+        """Non-image entries must pass through verbatim — no accidental
+        absolutisation of URL strings etc."""
+        from dailystream.timeline import generate_structured
+
+        wm, pm, pipe = workspace_with_pipeline
+        pm.add_entry(pipe, "url", "https://example.com/x", "ref")
+        pm.add_entry(pipe, "text", "some note", "diary")
+
+        data = generate_structured(wm.workspace_dir, wm.meta)
+        kinds = {(e["input_type"], e["input_content"]) for e in data["entries"]}
+        assert ("url", "https://example.com/x") in kinds
+        assert ("text", "some note") in kinds
+
+    def test_generate_timeline_md_renders_relative_image_link(self, workspace_with_pipeline):
+        """The human-readable timeline_report.md lives at workspace root,
+        so image links in it should be workspace-relative (not absolute,
+        not relying on CWD)."""
+        from dailystream.timeline import generate_timeline
+
+        wm, pm, pipe = workspace_with_pipeline
+        ws_dir = wm.workspace_dir
+
+        img = _make_png(ws_dir / "screenshots" / "report.png")
+        pm.add_entry(pipe, "image", str(img), "")
+
+        report = generate_timeline(ws_dir, wm.meta)
+        assert report is not None and report.exists()
+        text = report.read_text(encoding="utf-8")
+        # Must contain the relative link — and must NOT embed an
+        # absolute path (that would leak the local user's home dir).
+        assert "screenshots/report.png" in text
+        assert str(ws_dir) not in text
