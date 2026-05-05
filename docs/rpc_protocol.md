@@ -61,7 +61,14 @@ JSON, one message per line).
 | Method | Params | Result |
 |--------|--------|--------|
 | `timeline.generate` | — | `{path}` |
-| `timeline.export_structured` | — | ReviewData JSON (see M4) |
+| `timeline.export_structured` | — | ReviewData JSON (see M4) — full payload, legacy |
+| `timeline.export_summary` | — | `{workspace, stats, pipeline_summaries, daily_summary}` (no per-entry data) |
+| `timeline.export_pipeline_entries` | `{pipeline: str}` | `{pipeline, entries: [...]}` for one pipeline |
+
+`export_summary` + `export_pipeline_entries` let the Swift Daily Review
+window open instantly (summary) and stream in per-pipeline content in
+parallel; `export_structured` remains for callers that prefer a single
+payload.
 
 ### ai
 | Method | Params | Result |

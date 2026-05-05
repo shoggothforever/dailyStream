@@ -818,6 +818,45 @@ def _register_timeline_methods(d: Dispatcher, state: _ServerState) -> None:
                     "daily_summary": None}
         return data
 
+    @d.method("timeline.export_summary")
+    def _export_summary() -> dict:
+        """Lightweight summary payload (stats / pipelines / daily_summary)
+        **without** per-entry data.  Used by the Swift Daily Review
+        window to render the hero / stats strip *instantly* while the
+        per-pipeline entries stream in via :meth:`timeline.export_pipeline_entries`.
+        """
+        _require_active_workspace(state)
+        from .timeline import generate_summary
+
+        data = generate_summary(
+            state.wm.workspace_dir, state.wm.meta, config=state.config,
+        )
+        if data is None:
+            return {"workspace": _meta_to_dict(state),
+                    "stats": {}, "pipeline_summaries": [],
+                    "daily_summary": None}
+        return data
+
+    @d.method("timeline.export_pipeline_entries")
+    def _export_pipeline_entries(pipeline: str) -> dict:
+        """Return ``{pipeline, entries[]}`` for a single pipeline.
+
+        Paired with :meth:`timeline.export_summary` to let clients
+        progressively populate the Daily Review timeline without a
+        single large payload.
+        """
+        _require_active_workspace(state)
+        if not pipeline or not isinstance(pipeline, str):
+            raise InvalidParams("`pipeline` must be a non-empty string")
+        from .timeline import generate_pipeline_entries
+
+        return generate_pipeline_entries(
+            state.wm.workspace_dir,
+            state.wm.meta,
+            pipeline,
+            config=state.config,
+        )
+
 
 def _register_ai_methods(d: Dispatcher, state: _ServerState) -> None:
 

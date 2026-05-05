@@ -1,7 +1,18 @@
 // DailyReviewWindow.swift
 // Standalone NSWindow that shows a beautiful "today's review" after
-// ending a workspace.  Pulls data from `timeline.export_structured`
-// and renders Hero + Stats + Timeline waterfall.
+// ending a workspace.  Data flow:
+//
+//   1. `timeline.export_summary`  → hero + stats + pipeline summaries
+//      (the window opens *instantly* on this payload).
+//   2. `timeline.export_pipeline_entries(name)` is then fanned out in
+//      parallel for each pipeline, populating the timeline as entries
+//      arrive.  Images load asynchronously via the shared
+//      ``LocalImageView`` / ``LocalImageCache`` so scrolling stays
+//      smooth even for 80+ screenshots.
+//
+// The older ``timeline.export_structured`` full-payload path is still
+// supported via ``show(data:)`` for the manual ``showDailyReview`` menu
+// item.
 
 import AppKit
 import SwiftUI
@@ -15,8 +26,24 @@ final class DailyReviewWindow {
 
     private init() {}
 
+    /// Open the window with a lightweight summary only.  Pipeline
+    /// entries are expected to be streamed in later via
+    /// ``DailyReviewVM.appendPipelineEntries``.
+    func show(summary: ReviewSummary, bridge: CoreBridge) -> DailyReviewVM {
+        let vm = DailyReviewVM(summary: summary, bridge: bridge)
+        present(vm: vm)
+        return vm
+    }
+
+    /// Open the window with a fully-populated ``ReviewData`` payload
+    /// (legacy path — used by ``showDailyReview`` which still calls
+    /// ``timeline.export_structured``).
     func show(data: ReviewData, bridge: CoreBridge) {
         let vm = DailyReviewVM(data: data, bridge: bridge)
+        present(vm: vm)
+    }
+
+    private func present(vm: DailyReviewVM) {
         let content = DailyReviewContent(vm: vm) { [weak self] in
             self?.close()
         }
@@ -52,14 +79,56 @@ final class DailyReviewWindow {
 
 @MainActor
 final class DailyReviewVM: ObservableObject {
+    /// The primary mutable source of truth — starts with header/stats
+    /// from summary and grows as per-pipeline entries stream in.
     @Published var data: ReviewData
     @Published var editingEntry: ReviewData.Entry? = nil
     @Published var editText: String = ""
+
+    /// Pipelines whose entries haven't arrived yet.  Drives the
+    /// "loading …" affordance in the timeline.
+    @Published var loadingPipelines: Set<String> = []
     let bridge: CoreBridge
 
+    /// Initialise from a full ``ReviewData`` payload (legacy).
     init(data: ReviewData, bridge: CoreBridge) {
         self.data = data
         self.bridge = bridge
+    }
+
+    /// Initialise from a summary-only payload.  Timeline is empty until
+    /// pipelines are appended via ``appendPipelineEntries``.
+    init(summary: ReviewSummary, bridge: CoreBridge) {
+        self.data = ReviewData(
+            workspace: summary.workspace,
+            stats: summary.stats,
+            entries: [],
+            pipeline_summaries: summary.pipeline_summaries,
+            daily_summary: summary.daily_summary
+        )
+        self.bridge = bridge
+        // Mark every pipeline as "still loading" so the UI can show a
+        // placeholder row until its entries land.
+        self.loadingPipelines = Set(summary.workspace.pipelines)
+    }
+
+    /// Called from ``AppState.endWorkspace`` once a pipeline's entries
+    /// arrive.  Merges the new entries into the timeline in
+    /// chronological order and drops the pipeline from the loading set.
+    func appendPipelineEntries(pipeline: String, entries: [ReviewData.Entry]) {
+        var updated = data
+        updated.entries.append(contentsOf: entries)
+        // Keep the timeline sorted by timestamp so mixing pipelines
+        // doesn't produce a jumbled order as they arrive out of turn.
+        updated.entries.sort { $0.timestamp < $1.timestamp }
+        data = updated
+        loadingPipelines.remove(pipeline)
+    }
+
+    /// Notify the VM that loading a pipeline failed / yielded nothing;
+    /// drops it from the loading set so the spinner disappears.
+    func finishPipelineLoad(_ pipeline: String) {
+        loadingPipelines.remove(pipeline)
     }
 
     func deleteEntry(_ entry: ReviewData.Entry) async {
@@ -147,6 +216,22 @@ final class DailyReviewVM: ObservableObject {
 
 // MARK: - Data model ----------------------------------------------------
 
+/// Lightweight payload returned by ``timeline.export_summary``.
+/// Shares ``Workspace`` / ``Stats`` / ``PipelineSummary`` / ``DailySummary``
+/// with ``ReviewData`` so the two shapes stay in lock-step.
+struct ReviewSummary: Decodable, Sendable {
+    let workspace: ReviewData.Workspace
+    let stats: ReviewData.Stats?
+    let pipeline_summaries: [ReviewData.PipelineSummary]?
+    let daily_summary: ReviewData.DailySummary?
+}
+
+/// Payload returned by ``timeline.export_pipeline_entries``.
+struct PipelineEntriesResponse: Decodable, Sendable {
+    let pipeline: String
+    let entries: [ReviewData.Entry]
+}
+
 struct ReviewData: Decodable, Sendable {
     struct Workspace: Decodable, Sendable {
         let workspace_id: String
@@ -209,7 +294,10 @@ struct DailyReviewContent: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            // Lazy vertical stack — only the rows near the viewport are
+            // materialised, so opening a workspace with 80+ entries
+            // no longer blocks the main thread building view trees.
+            LazyVStack(alignment: .leading, spacing: 24) {
                 heroSection
                 statsStrip
                 pipelineSummariesSection
@@ -290,8 +378,23 @@ struct DailyReviewContent: View {
 
     private var timelineSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Timeline")
-                .font(.system(size: 20, weight: .semibold))
+            HStack(spacing: 8) {
+                Text("Timeline")
+                    .font(.system(size: 20, weight: .semibold))
+                // When pipelines are still streaming in, show a
+                // compact spinner so the user knows more rows are
+                // coming rather than thinking the view is empty.
+                if !vm.loadingPipelines.isEmpty {
+                    HStack(spacing: 4) {
+                        ProgressView()
+                            .scaleEffect(0.5)
+                            .frame(width: 12, height: 12)
+                        Text("loading \(vm.loadingPipelines.count) pipeline\(vm.loadingPipelines.count == 1 ? "" : "s")…")
+                            .font(DSFont.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
             ForEach(data.entries) { entry in
                 entryRow(entry)
             }
@@ -404,13 +507,16 @@ struct DailyReviewContent: View {
                     }
 
                 case "image":
-                    if let nsImage = NSImage(contentsOfFile: entry.input_content) {
-                        Image(nsImage: nsImage)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(maxHeight: 160)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
+                    // Async on a background thread + shared NSCache.
+                    // Replaces the previous main-thread synchronous
+                    // ``NSImage(contentsOfFile:)`` that blocked the UI
+                    // when a workspace had many screenshots.
+                    LocalImageView(
+                        url: URL(fileURLWithPath: entry.input_content),
+                        maxWidth: nil,
+                        maxHeight: 160,
+                        cornerRadius: 8
+                    )
 
                 default:
                     EmptyView()

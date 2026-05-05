@@ -219,15 +219,71 @@ public final class AppState: ObservableObject {
 
     /// End the current workspace, surfacing the timeline path if any.
     /// Automatically opens Daily Review on success.
+    ///
+    /// Fast-path design (opened issue: Daily Review took several
+    /// seconds to appear for workspaces with 80+ entries):
+    ///
+    /// 1. Fetch the lightweight summary first — this is tiny (~2KB)
+    ///    and returns almost instantly.
+    /// 2. Show the Daily Review window *immediately* with an empty
+    ///    timeline; hero/stats/pipeline-summary sections render right
+    ///    away, so the user perceives "the window opened".
+    /// 3. Fan out per-pipeline entry fetches **in parallel** and
+    ///    append them into the VM as they arrive; LazyVStack + the
+    ///    async ``LocalImageView`` then render only the on-screen
+    ///    rows, keeping the main thread responsive.
+    /// 4. Only after all RPC reads finish do we call
+    ///    ``workspace.end`` — because new RPC methods require an
+    ///    active workspace, and the user doesn't care when the actual
+    ///    "end" finalises on disk.
     public func endWorkspace() async {
         struct Result: Decodable { let timeline_report: String? }
         do {
             // Remember the workspace path for quick reopen.
             let wsPath = await workspaceDirPath()
 
-            // Grab structured data BEFORE ending (workspace is still active).
-            let reviewData = try? await fetchReviewData()
+            // 1. Grab the lightweight summary before ending the workspace.
+            let summary = try? await fetchReviewSummary()
 
+            // 2. If the workspace has content, open Daily Review right
+            //    away and start streaming pipeline entries in the
+            //    background.  Keep a handle to the VM so the async
+            //    fetches can append into it.
+            var reviewVM: DailyReviewVM? = nil
+            if let summary,
+               (summary.stats?.total_entries ?? 0) > 0 {
+                reviewVM = DailyReviewWindow.shared.show(
+                    summary: summary, bridge: bridge
+                )
+
+                let vm = reviewVM!
+                let pipelines = summary.workspace.pipelines
+                // Parallel fan-out: every pipeline loads independently
+                // so the slowest one doesn't delay faster ones.  Each
+                // completion mutates the VM on the MainActor.
+                await withTaskGroup(of: Void.self) { group in
+                    for name in pipelines {
+                        group.addTask { [self] in
+                            do {
+                                let resp = try await fetchPipelineEntries(pipeline: name)
+                                await MainActor.run {
+                                    vm.appendPipelineEntries(
+                                        pipeline: resp.pipeline,
+                                        entries: resp.entries
+                                    )
+                                }
+                            } catch {
+                                await MainActor.run {
+                                    vm.finishPipelineLoad(name)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. Finalise the workspace on disk (writes timeline_report.md,
+            //    flushes AI queue, etc.).
             let r: Result = try await bridge.call(
                 "workspace.end", params: RPCEmptyParams()
             )
@@ -237,11 +293,6 @@ public final class AppState: ObservableObject {
                 showToast(title: "Workspace ended", subtitle: report)
             } else {
                 showToast(title: "Workspace ended")
-            }
-
-            // Show Daily Review window if we got data.
-            if let data = reviewData {
-                DailyReviewWindow.shared.show(data: data, bridge: bridge)
             }
         } catch {
             showError(title: "End failed", error: error)
@@ -257,13 +308,34 @@ public final class AppState: ObservableObject {
         await openWorkspaceAt(URL(fileURLWithPath: path))
     }
 
-    /// Fetch structured timeline data for the Daily Review window.
+    /// Fetch structured timeline data for the Daily Review window
+    /// (legacy single-shot payload — still used by the manual
+    /// ``showDailyReview`` menu item).
     func fetchReviewData() async throws -> ReviewData? {
         let data: ReviewData = try await bridge.call(
             "timeline.export_structured", params: RPCEmptyParams()
         )
         if data.entries.isEmpty { return nil }
         return data
+    }
+
+    /// Fetch the lightweight summary used to open the Daily Review
+    /// window without blocking on per-entry data.
+    func fetchReviewSummary() async throws -> ReviewSummary {
+        let data: ReviewSummary = try await bridge.call(
+            "timeline.export_summary", params: RPCEmptyParams()
+        )
+        return data
+    }
+
+    /// Fetch all entries for a single pipeline.  Used for the
+    /// progressive-load path driven from ``endWorkspace``.
+    func fetchPipelineEntries(pipeline: String) async throws -> PipelineEntriesResponse {
+        struct Params: Encodable, Sendable { let pipeline: String }
+        return try await bridge.call(
+            "timeline.export_pipeline_entries",
+            params: Params(pipeline: pipeline)
+        )
     }
 
     /// Manually open the Daily Review window for the current workspace.

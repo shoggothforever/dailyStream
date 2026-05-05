@@ -240,31 +240,241 @@ def generate_timeline(
     return report_path
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers for structured (Daily Review) export
+# ---------------------------------------------------------------------------
+
+
+def _enrich_entry(
+    entry: dict,
+    workspace_dir: Path,
+    ai_analyses: dict,
+    entry_idx: int,
+) -> dict:
+    """Normalise a raw pipeline entry into the Swift-facing shape.
+
+    - image ``input_content`` is resolved to an absolute path (the Swift
+      ``NSImage(contentsOfFile:)`` API does not honour
+      workspace-relative paths);
+    - ai_* fields are populated from the matching AI analysis (when
+      available).
+    """
+    itype = entry.get("input_type", "?")
+    raw_content = entry.get("input_content", "")
+
+    if itype == "image" and raw_content:
+        resolved = str(resolve_entry_path(workspace_dir, raw_content))
+    else:
+        resolved = raw_content
+
+    e: dict = {
+        "timestamp": entry.get("timestamp", ""),
+        "pipeline": entry.get("pipeline", "unknown"),
+        "input_type": itype,
+        "description": entry.get("description", ""),
+        "input_content": resolved,
+        "ai_description": "",
+        "ai_category": "",
+        "ai_elements": [],
+    }
+
+    analysis = ai_analyses.get(entry_idx) if ai_analyses else None
+    if analysis:
+        e["ai_description"] = analysis.get("description", "")
+        e["ai_category"] = analysis.get("category", "")
+        e["ai_elements"] = analysis.get("key_elements", [])
+    return e
+
+
+def _workspace_header(workspace_meta, ai_mode: str, pipeline_names: list[str]) -> dict:
+    """The static ``workspace`` block shared by summary and full exports."""
+    return {
+        "workspace_id": getattr(workspace_meta, "workspace_id", ""),
+        "title": getattr(workspace_meta, "title", None)
+                 or getattr(workspace_meta, "workspace_id", ""),
+        "created_at": getattr(workspace_meta, "created_at", ""),
+        "ended_at": getattr(workspace_meta, "ended_at", None),
+        "ai_mode": ai_mode,
+        "pipelines": pipeline_names,
+    }
+
+
+def _daily_summary_block(workspace_dir: Path, ai_mode: str) -> Optional[dict]:
+    if ai_mode != "daily_report":
+        return None
+    summary_data = _load_daily_summary(workspace_dir)
+    if not summary_data:
+        return None
+    return {
+        "overall_summary": summary_data.get("overall_summary", ""),
+        "pipeline_summaries": summary_data.get("pipeline_summaries", {}),
+        "generated_at": summary_data.get("generated_at", ""),
+        "model": summary_data.get("model", ""),
+    }
+
+
+def _pipeline_entry_index_map(pm: PipelineManager, pipeline_name: str) -> dict:
+    """Map ``timestamp → index-within-pipeline`` for AI-analysis lookup."""
+    return {
+        e.get("timestamp", ""): idx
+        for idx, e in enumerate(pm.get_entries(pipeline_name))
+    }
+
+
+# ---------------------------------------------------------------------------
+# New layered export API (consumed by AppState.endWorkspace)
+# ---------------------------------------------------------------------------
+
+
+def generate_summary(
+    workspace_dir: Path,
+    workspace_meta,
+    config: Optional[Config] = None,
+) -> Optional[dict]:
+    """Lightweight payload: workspace header + stats + pipeline summaries
+    + (optional) daily summary.  **Entries are NOT included** — they are
+    streamed per-pipeline via :func:`generate_pipeline_entries`, letting
+    the Daily Review window open instantly while the (potentially large)
+    per-pipeline content loads in the background.
+
+    Returns ``None`` when the workspace has no entries.
+    """
+    from collections import Counter
+
+    pm = PipelineManager(workspace_dir)
+    all_entries = pm.get_all_entries()
+    if not all_entries:
+        return None
+
+    ai_mode = getattr(workspace_meta, "ai_mode", "off") or "off"
+    pipeline_names = pm.list_pipelines()
+
+    # Pre-load AI analyses once; reused by stats aggregation below.
+    ai_analyses_by_pipeline: dict[str, dict] = {}
+    if ai_mode != "off":
+        for pname in pipeline_names:
+            ai_analyses_by_pipeline[pname] = _load_ai_analyses(
+                workspace_dir, pname
+            )
+
+    # Aggregate stats without materialising the enriched-entry list.
+    type_counts: dict[str, int] = {}
+    ai_categories: dict[str, int] = {}
+    ai_elements_all: list[str] = []
+    per_pipeline_counts: dict[str, int] = {p: 0 for p in pipeline_names}
+
+    for pname in pipeline_names:
+        entries = pm.get_entries(pname)
+        per_pipeline_counts[pname] = len(entries)
+        analyses = ai_analyses_by_pipeline.get(pname, {})
+        for idx, entry in enumerate(entries):
+            itype = entry.get("input_type", "?")
+            type_counts[itype] = type_counts.get(itype, 0) + 1
+            analysis = analyses.get(idx) if analyses else None
+            if analysis:
+                cat = analysis.get("category", "")
+                if cat:
+                    ai_categories[cat] = ai_categories.get(cat, 0) + 1
+                ai_elements_all.extend(analysis.get("key_elements", []) or [])
+
+    pipeline_summaries: list[dict] = []
+    for pname in pipeline_names:
+        meta = pm.get_pipeline_meta(pname)
+        pipeline_summaries.append({
+            "name": pname,
+            "entry_count": per_pipeline_counts.get(pname, 0),
+            "description": meta.get("description", ""),
+            "goal": meta.get("goal", ""),
+        })
+
+    elem_counts = Counter(ai_elements_all).most_common(10)
+
+    return {
+        "workspace": _workspace_header(workspace_meta, ai_mode, pipeline_names),
+        "stats": {
+            "total_entries": len(all_entries),
+            "type_counts": type_counts,
+            "pipeline_count": len(pipeline_summaries),
+            "ai_categories": ai_categories,
+            "top_elements": [
+                {"name": n, "count": c} for n, c in elem_counts
+            ],
+        },
+        "pipeline_summaries": pipeline_summaries,
+        "daily_summary": _daily_summary_block(workspace_dir, ai_mode),
+    }
+
+
+def generate_pipeline_entries(
+    workspace_dir: Path,
+    workspace_meta,
+    pipeline_name: str,
+    config: Optional[Config] = None,
+) -> dict:
+    """Return ``{"pipeline": name, "entries": [...]}`` for a single
+    pipeline, in chronological order, with image paths resolved to
+    absolute and AI fields populated.
+
+    Unknown pipelines return an empty ``entries`` list instead of
+    raising, so the Swift VM can treat "no data yet" uniformly.
+    """
+    pm = PipelineManager(workspace_dir)
+    pipeline_names = pm.list_pipelines()
+    if pipeline_name not in pipeline_names:
+        return {"pipeline": pipeline_name, "entries": []}
+
+    ai_mode = getattr(workspace_meta, "ai_mode", "off") or "off"
+    ai_analyses: dict = {}
+    if ai_mode != "off":
+        ai_analyses = _load_ai_analyses(workspace_dir, pipeline_name)
+
+    raw_entries = pm.get_entries(pipeline_name)
+    enriched = [
+        _enrich_entry(
+            {**e, "pipeline": pipeline_name},
+            workspace_dir,
+            ai_analyses,
+            idx,
+        )
+        for idx, e in enumerate(raw_entries)
+    ]
+    return {"pipeline": pipeline_name, "entries": enriched}
+
+
+# ---------------------------------------------------------------------------
+# Legacy full-payload export (kept for backward compatibility)
+# ---------------------------------------------------------------------------
+
+
 def generate_structured(
     workspace_dir: Path,
     workspace_meta,
     config: Optional[Config] = None,
 ) -> Optional[dict]:
-    """Generate a structured JSON representation of the workspace timeline.
+    """Full structured export consumed by the Swift Daily Review window
+    via ``timeline.export_structured``.  Equivalent to
+    :func:`generate_summary` + all entries from every pipeline merged
+    into a single time-sorted list.
 
-    This is consumed by the Swift Daily Review window (M4) via the
-    ``timeline.export_structured`` RPC method.  It provides all the data
-    needed for the Hero / StatsStrip / TimelineWaterfall views.
+    This is the legacy shape — kept for backward compatibility and for
+    the ``showDailyReview`` path that doesn't benefit from splitting.
+    Newer flows should prefer :func:`generate_summary` +
+    :func:`generate_pipeline_entries`.
 
     Returns ``None`` when the workspace has no entries.
     """
-    from dataclasses import asdict as _asdict
-    from collections import Counter
-
     pm = PipelineManager(workspace_dir)
     all_entries = pm.get_all_entries()
-
     if not all_entries:
         return None
 
-    ai_mode = getattr(workspace_meta, "ai_mode", "off") or "off"
+    summary = generate_summary(workspace_dir, workspace_meta, config=config)
+    if summary is None:  # defensive — mirrors the early return above
+        return None
 
-    # Pre-load AI analyses per pipeline
+    # Expand entries for every pipeline, in time order (all_entries is
+    # already sorted globally by PipelineManager).
+    ai_mode = summary["workspace"]["ai_mode"]
     ai_analyses_by_pipeline: dict[str, dict] = {}
     if ai_mode != "off":
         for pname in pm.list_pipelines():
@@ -272,117 +482,23 @@ def generate_structured(
                 workspace_dir, pname
             )
 
-    # Build per-pipeline entry index order for AI lookup
-    pipeline_entries_order: dict[str, list[str]] = {}
-    for pname in pm.list_pipelines():
-        entries = pm.get_entries(pname)
-        pipeline_entries_order[pname] = [
-            e.get("timestamp", "") for e in entries
-        ]
-
-    def _get_entry_index(pipe: str, ts: str) -> int:
-        order = pipeline_entries_order.get(pipe, [])
-        try:
-            return order.index(ts)
-        except ValueError:
-            return -1
-
-    # Stats
-    ai_categories: dict[str, int] = {}
-    ai_elements_all: list[str] = []
-    type_counts: dict[str, int] = {}
+    # Per-pipeline ts→index map so AI lookup is O(1).
+    ts_to_idx_per_pipeline: dict[str, dict] = {
+        pname: _pipeline_entry_index_map(pm, pname)
+        for pname in pm.list_pipelines()
+    }
 
     enriched_entries: list[dict] = []
     for entry in all_entries:
-        ts = entry.get("timestamp", "")
         pipe = entry.get("pipeline", "unknown")
-        itype = entry.get("input_type", "?")
-        type_counts[itype] = type_counts.get(itype, 0) + 1
-
-        # For image entries ``input_content`` is a workspace-relative
-        # path (newer data) or an absolute path (legacy).  Swift clients
-        # consume this via ``NSImage(contentsOfFile:)`` which needs an
-        # absolute filesystem path, so we always resolve it here.
-        raw_content = entry.get("input_content", "")
-        if itype == "image" and raw_content:
-            resolved = str(resolve_entry_path(workspace_dir, raw_content))
-        else:
-            resolved = raw_content
-
-        e: dict = {
-            "timestamp": ts,
-            "pipeline": pipe,
-            "input_type": itype,
-            "description": entry.get("description", ""),
-            "input_content": resolved,
-            "ai_description": "",
-            "ai_category": "",
-            "ai_elements": [],
-        }
-
-        if ai_mode != "off":
-            entry_idx = _get_entry_index(pipe, ts)
-            analyses = ai_analyses_by_pipeline.get(pipe, {})
-            analysis = analyses.get(entry_idx)
-            if analysis:
-                e["ai_description"] = analysis.get("description", "")
-                e["ai_category"] = analysis.get("category", "")
-                e["ai_elements"] = analysis.get("key_elements", [])
-                cat = e["ai_category"]
-                if cat:
-                    ai_categories[cat] = ai_categories.get(cat, 0) + 1
-                ai_elements_all.extend(e["ai_elements"])
-
-        enriched_entries.append(e)
-
-    # Pipeline summaries
-    pipeline_summaries: list[dict] = []
-    for pname in pm.list_pipelines():
-        meta = pm.get_pipeline_meta(pname)
-        pcount = sum(1 for e in enriched_entries if e["pipeline"] == pname)
-        ps: dict = {
-            "name": pname,
-            "entry_count": pcount,
-            "description": meta.get("description", ""),
-            "goal": meta.get("goal", ""),
-        }
-        pipeline_summaries.append(ps)
-
-    # Daily summary (daily_report mode)
-    daily_summary = None
-    if ai_mode == "daily_report":
-        summary_data = _load_daily_summary(workspace_dir)
-        if summary_data:
-            daily_summary = {
-                "overall_summary": summary_data.get("overall_summary", ""),
-                "pipeline_summaries": summary_data.get("pipeline_summaries", {}),
-                "generated_at": summary_data.get("generated_at", ""),
-                "model": summary_data.get("model", ""),
-            }
-
-    # Top elements
-    elem_counts = Counter(ai_elements_all).most_common(10)
+        ts = entry.get("timestamp", "")
+        entry_idx = ts_to_idx_per_pipeline.get(pipe, {}).get(ts, -1)
+        analyses = ai_analyses_by_pipeline.get(pipe, {})
+        enriched_entries.append(
+            _enrich_entry(entry, workspace_dir, analyses, entry_idx)
+        )
 
     return {
-        "workspace": {
-            "workspace_id": getattr(workspace_meta, "workspace_id", ""),
-            "title": getattr(workspace_meta, "title", None)
-                     or getattr(workspace_meta, "workspace_id", ""),
-            "created_at": getattr(workspace_meta, "created_at", ""),
-            "ended_at": getattr(workspace_meta, "ended_at", None),
-            "ai_mode": ai_mode,
-            "pipelines": [p.get("name", "") for p in pipeline_summaries],
-        },
-        "stats": {
-            "total_entries": len(enriched_entries),
-            "type_counts": type_counts,
-            "pipeline_count": len(pipeline_summaries),
-            "ai_categories": ai_categories,
-            "top_elements": [
-                {"name": name, "count": count} for name, count in elem_counts
-            ],
-        },
+        **summary,
         "entries": enriched_entries,
-        "pipeline_summaries": pipeline_summaries,
-        "daily_summary": daily_summary,
     }
