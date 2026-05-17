@@ -32,6 +32,21 @@ JSON, one message per line).
 | `workspace.end` | — | `{timeline_report}` |
 | `workspace.status` | — | status dict |
 | `workspace.list_recent` | `{limit?}` | `[{workspace_id, title, workspace_path, ...}]` |
+| `workspace.move` | `{target_parent, workspace_path?, force?}` | `{old_path, new_path, was_active}` |
+
+`workspace.move` notes:
+
+- Moves a workspace's directory tree into ``target_parent``, preserving the
+  ``yymmdd/<title>`` two-level layout underneath.
+- Same-volume: atomic ``rename`` (milliseconds).
+- Cross-volume: copy → verify all image entries resolve → delete original.
+  Verification failure rolls back the partial copy and keeps the original.
+- ``workspace_path`` is optional — defaults to the active workspace.
+- Active workspaces require ``force=true``; the core then runs
+  ``end → move → reopen`` and emits a ``workspace.changed`` event.
+- After a successful move, absolute ``input_content`` paths inside the
+  workspace are normalised to relative POSIX form so future moves are
+  friction-free.
 
 ### pipeline
 | Method | Params | Result |

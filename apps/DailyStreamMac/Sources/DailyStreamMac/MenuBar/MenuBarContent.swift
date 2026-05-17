@@ -52,6 +52,9 @@ public struct MenuBarContent: View {
                 Button("View Stream…") {
                     Task { await state.showStreamViewer() }
                 }
+                Button("Move Workspace…") {
+                    Task { await promptMoveWorkspace() }
+                }
                 Button("End Workspace") {
                     Task { await state.endWorkspace() }
                 }
@@ -303,6 +306,47 @@ public struct MenuBarContent: View {
         NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         await state.openWorkspaceAt(url)
+    }
+
+    /// "Move Workspace…" flow.
+    ///
+    /// 1. Pick a destination *parent* directory via NSOpenPanel — the
+    ///    current ``yymmdd/<title>`` layout will be preserved beneath
+    ///    it (e.g. selecting ``~/Archive`` produces
+    ///    ``~/Archive/260517/foo``).
+    /// 2. Confirm via NSAlert because the active workspace is briefly
+    ///    ended and reopened — making sure the user sees the cost
+    ///    before any I/O happens.
+    /// 3. Delegate to ``AppState.moveWorkspace`` which calls the
+    ///    ``workspace.move`` RPC (atomic rename on same volume,
+    ///    copy+verify+delete on cross-volume).
+    private func promptMoveWorkspace() async {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Move Here"
+        panel.message = "Choose a destination folder for this workspace."
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        // Confirm the end + move + reopen sequence on the active path.
+        let confirmed = await MainActor.run { () -> Bool in
+            let alert = NSAlert()
+            alert.messageText = "Move workspace to this folder?"
+            alert.informativeText = (
+                "The current workspace will be ended, moved to:\n\n" +
+                url.path +
+                "\n\nand reopened at the new location."
+            )
+            alert.addButton(withTitle: "Move")
+            alert.addButton(withTitle: "Cancel")
+            return alert.runModal() == .alertFirstButtonReturn
+        }
+        guard confirmed else { return }
+
+        await state.moveWorkspace(to: url, force: true)
     }
 
     private func promptNewPipeline() async {

@@ -190,6 +190,214 @@ class WorkspaceManager:
 
         return str(report_path) if report_path else None
 
+    # ------------------------------------------------------------------
+    # Move / relocate
+    # ------------------------------------------------------------------
+
+    def move(
+        self,
+        target_parent: Path,
+        keep_layout: bool = True,
+    ) -> Path:
+        """Relocate the **already-loaded** workspace into a new parent.
+
+        The workspace MUST be loaded (via :meth:`load`) and MUST NOT be
+        active — callers are expected to ``end`` the workspace first
+        (the RPC layer handles that and the subsequent ``reopen`` so the
+        UX feels continuous).
+
+        Parameters
+        ----------
+        target_parent
+            Existing directory the workspace will be placed inside.  When
+            ``keep_layout`` is True (the default) the existing
+            ``yymmdd/<title>`` two-level layout is preserved beneath
+            ``target_parent`` so the destination ends up at
+            ``target_parent/<yymmdd>/<title>``.  Otherwise the workspace
+            is placed directly under ``target_parent``.
+        keep_layout
+            See above.
+
+        Returns the new workspace directory.
+
+        Strategy
+        --------
+        1. Compute ``dst_dir`` and assert it doesn't already exist.
+        2. Try ``os.rename`` first — that's atomic on the same volume
+           and finishes in milliseconds even for huge workspaces.
+        3. On ``OSError`` for cross-device (errno 18 / EXDEV) fall back
+           to ``shutil.copytree`` + post-copy verification + ``rmtree``
+           of the original.  On any verification failure the original
+           is preserved and the partial copy is removed.
+        4. Rewrite ``workspace_meta.json``'s ``workspace_path`` to the
+           new absolute path.
+        5. Normalise any absolute ``input_content`` paths in
+           ``pipelines/*/context.json`` to workspace-relative form so
+           future moves are friction-free.
+        6. Update the in-memory ``_workspace_dir`` reference.
+        """
+        import errno
+        import shutil
+
+        if self._workspace_dir is None or self._meta is None:
+            raise RuntimeError("move() requires a loaded workspace")
+        if self.is_active:
+            raise RuntimeError(
+                "move() requires the workspace to be ended first; "
+                "call end() before moving"
+            )
+
+        target_parent = Path(target_parent).expanduser().resolve()
+        if not target_parent.exists() or not target_parent.is_dir():
+            raise NotADirectoryError(
+                f"target parent does not exist or is not a directory: "
+                f"{target_parent}"
+            )
+
+        src_dir = self._workspace_dir.resolve()
+        if keep_layout:
+            # Preserve the <yymmdd>/<title> layout: take the workspace's
+            # own basename + its date-folder parent's name.
+            date_folder = src_dir.parent.name
+            title_folder = src_dir.name
+            dst_dir = target_parent / date_folder / title_folder
+        else:
+            dst_dir = target_parent / src_dir.name
+
+        # Refuse to overwrite — caller must clean up beforehand.
+        if dst_dir.exists():
+            raise FileExistsError(
+                f"destination already exists: {dst_dir}"
+            )
+        # Refuse no-op / parent-of-self moves.
+        try:
+            if dst_dir.resolve() == src_dir:
+                raise ValueError("destination is identical to source")
+        except OSError:
+            pass
+
+        dst_dir.parent.mkdir(parents=True, exist_ok=True)
+
+        # ── 2. attempt atomic rename, fall back to copy on EXDEV ──
+        used_copy = False
+        try:
+            src_dir.rename(dst_dir)
+        except OSError as e:
+            if e.errno != errno.EXDEV:
+                # Real failure — bubble up so caller can surface it.
+                raise
+            used_copy = True
+            # Cross-device: copy → verify → delete original.
+            shutil.copytree(src_dir, dst_dir, symlinks=True)
+            missing = self._verify_image_entries(dst_dir)
+            if missing:
+                # Roll back: remove partial copy and any empty parent
+                # directories we created on the way down.  Original
+                # at ``src_dir`` is left intact.
+                shutil.rmtree(dst_dir, ignore_errors=True)
+                cleanup_dir = dst_dir.parent
+                while (cleanup_dir != target_parent
+                       and cleanup_dir.exists()
+                       and not any(cleanup_dir.iterdir())):
+                    try:
+                        cleanup_dir.rmdir()
+                    except OSError:
+                        break
+                    cleanup_dir = cleanup_dir.parent
+                raise RuntimeError(
+                    f"verification failed after cross-device copy: "
+                    f"{len(missing)} image(s) missing in destination "
+                    f"(first: {missing[0]}); original at {src_dir} is "
+                    f"untouched"
+                ) from None
+            shutil.rmtree(src_dir)
+
+        # ── 4. patch workspace_meta.json's workspace_path ────────
+        meta_file = dst_dir / "workspace_meta.json"
+        if meta_file.exists():
+            meta_data = read_json(meta_file)
+            meta_data["workspace_path"] = str(dst_dir)
+            write_json(meta_file, meta_data)
+
+        # ── 5. relativise stale absolute input_content paths ─────
+        self._relativise_entries(dst_dir, src_dir)
+
+        # ── 6. update in-memory state ────────────────────────────
+        self._workspace_dir = dst_dir
+        if self._meta is not None:
+            self._meta.workspace_path = str(dst_dir)
+
+        return dst_dir
+
+    @staticmethod
+    def _verify_image_entries(ws_dir: Path) -> list[Path]:
+        """Walk every entry in ``ws_dir`` and return paths that don't
+        resolve.  Used as a post-copy sanity check."""
+        from .pipeline import resolve_entry_path
+
+        missing: list[Path] = []
+        pipelines_dir = ws_dir / "pipelines"
+        if not pipelines_dir.is_dir():
+            return missing
+        for ctx_file in pipelines_dir.glob("*/context.json"):
+            try:
+                ctx = read_json(ctx_file)
+            except Exception:  # noqa: BLE001
+                continue
+            for entry in ctx.get("entries", []):
+                if entry.get("input_type") != "image":
+                    continue
+                ic = entry.get("input_content", "")
+                if not ic:
+                    continue
+                resolved = resolve_entry_path(ws_dir, ic)
+                if not resolved.exists():
+                    missing.append(resolved)
+        return missing
+
+    @staticmethod
+    def _relativise_entries(new_ws: Path, old_ws: Path) -> None:
+        """Rewrite every absolute ``input_content`` path that *used* to
+        live inside ``old_ws`` so it's now a workspace-relative POSIX
+        path under ``new_ws``.  Paths outside the workspace are left
+        alone (the user might have configured an external screenshot
+        folder).
+
+        This keeps the workspace portable for any future move — the
+        next time the user relocates it a plain ``rename`` is enough,
+        no JSON rewrites needed.
+        """
+        pipelines_dir = new_ws / "pipelines"
+        if not pipelines_dir.is_dir():
+            return
+
+        old_ws_abs = old_ws.resolve()
+        for ctx_file in pipelines_dir.glob("*/context.json"):
+            try:
+                ctx = read_json(ctx_file)
+            except Exception:  # noqa: BLE001
+                continue
+            dirty = False
+            for entry in ctx.get("entries", []):
+                if entry.get("input_type") != "image":
+                    continue
+                ic = entry.get("input_content", "")
+                if not ic:
+                    continue
+                p = Path(ic)
+                if not p.is_absolute():
+                    continue
+                # Was the absolute path pointing into the old workspace?
+                try:
+                    rel = p.resolve().relative_to(old_ws_abs)
+                except (ValueError, OSError):
+                    # External path — leave it alone.
+                    continue
+                entry["input_content"] = rel.as_posix()
+                dirty = True
+            if dirty:
+                write_json(ctx_file, ctx)
+
     def add_pipeline(self, name: str) -> None:
         """Register a pipeline in workspace metadata."""
         if self._meta and name not in self._meta.pipelines:

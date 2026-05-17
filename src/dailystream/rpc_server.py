@@ -364,6 +364,157 @@ def _register_workspace_methods(d: Dispatcher, state: _ServerState) -> None:
                     return results
         return results
 
+    @d.method("workspace.move")
+    def _move(target_parent: str,
+              workspace_path: Optional[str] = None,
+              force: bool = False) -> dict:
+        """Relocate a workspace to a new parent directory.
+
+        Parameters
+        ----------
+        target_parent
+            Existing parent directory the workspace will move into.
+            The current ``yymmdd/<title>`` layout is preserved underneath.
+        workspace_path
+            Optional path to the workspace being moved.  Defaults to the
+            currently-active workspace.  When provided and the workspace
+            is *not* the active one, no end/reopen dance is performed.
+        force
+            When the targeted workspace is the active one, ``force=True``
+            authorises the implicit ``end → move → reopen`` sequence.
+            Without ``force`` an active workspace move is refused so the
+            caller (UI) can confirm with the user first.
+
+        Behaviour
+        ---------
+        * Same-volume move: atomic ``rename`` (milliseconds, no copy).
+        * Cross-volume move: copy → verify every image entry resolves →
+          delete original.  On verification failure the original is kept.
+        * After a successful move the workspace's metadata is updated
+          and any previously-absolute ``input_content`` paths inside the
+          workspace are normalised to workspace-relative form so the
+          next move is friction-free.
+        * If the workspace was active and ``force`` is True it is
+          re-opened at the new location and a ``workspace.changed``
+          event is emitted.
+
+        Returns ``{old_path, new_path, was_active}``.
+        """
+        target = Path(target_parent).expanduser()
+        if not target.exists() or not target.is_dir():
+            raise InvalidParams(
+                f"target_parent does not exist or is not a directory: {target}"
+            )
+
+        # ── Resolve which workspace we're moving ───────────────────
+        was_active = False
+        target_ws: Optional[Path] = None
+
+        if workspace_path:
+            target_ws = Path(workspace_path).expanduser()
+            if not (target_ws / "workspace_meta.json").exists():
+                raise NotFound(
+                    f"Not a workspace directory: {target_ws}"
+                )
+            # Is this the active one?
+            if (state.wm.is_active
+                    and state.wm.workspace_dir is not None
+                    and state.wm.workspace_dir.resolve() == target_ws.resolve()):
+                was_active = True
+        else:
+            if not state.wm.is_active or state.wm.workspace_dir is None:
+                raise StateConflict(
+                    "No active workspace; pass workspace_path explicitly"
+                )
+            target_ws = state.wm.workspace_dir
+            was_active = True
+
+        # ── Active workspaces need explicit consent ────────────────
+        if was_active and not force:
+            raise StateConflict(
+                "Workspace is active — pass force=true to end/move/reopen",
+                data={"workspace_dir": str(target_ws)},
+            )
+
+        # ── End → move → reopen sequence ───────────────────────────
+        if was_active:
+            # End the active workspace so its files aren't being held
+            # open by analysis queues etc.  We deliberately *don't*
+            # generate a timeline report here — the user wanted to
+            # move, not finalise.  Reopen below restores the prior
+            # ended_at=None state.
+            state.wm.end(
+                config=state.config,
+                analysis_queue=state.analysis_queue,
+            )
+            state.shutdown_analysis_queue()
+            d.event_bus.publish("workspace.changed", {"is_active": False})
+        else:
+            # Non-active path: ensure the WorkspaceManager is loaded
+            # with this workspace so move() can operate on it.  Save
+            # the prior loaded ws so we can restore it after the move
+            # if the user was viewing a different workspace.
+            prior_loaded = state.wm.workspace_dir
+            if not state.wm.load(target_ws):
+                raise NotFound(f"Failed to load workspace from {target_ws}")
+            # WorkspaceManager.load() blanks ended_at? No — it
+            # preserves it.  Good: the move() guard wants
+            # is_active==False which holds for ended workspaces.
+            try:
+                if state.wm.is_active:
+                    raise StateConflict(
+                        "Loaded workspace appears active even after "
+                        "load — refusing to move"
+                    )
+            except StateConflict:
+                # Roll back: re-load whatever was loaded before.
+                if prior_loaded is not None:
+                    state.wm.load(prior_loaded)
+                raise
+
+        old_path = target_ws
+
+        try:
+            new_path = state.wm.move(target)
+        except Exception:
+            # If we ended an active workspace and the move fails, try
+            # to reopen it at the original location so the user isn't
+            # left without an active workspace.
+            if was_active:
+                try:
+                    if state.wm.load(old_path):
+                        if state.wm.meta and state.wm.meta.ended_at is not None:
+                            state.wm.meta.ended_at = None
+                            state.wm.save_meta()
+                        set_active_workspace_path(old_path)
+                        state._refresh_pipeline_manager()
+                        d.event_bus.publish(
+                            "workspace.changed", _meta_to_dict(state)
+                        )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "workspace.move: rollback reopen failed"
+                    )
+            raise
+
+        # ── Reopen at new location if previously active ─────────────
+        if was_active:
+            if state.wm.meta and state.wm.meta.ended_at is not None:
+                state.wm.meta.ended_at = None
+                state.wm.save_meta()
+            set_active_workspace_path(new_path)
+            state._refresh_pipeline_manager()
+            if (state.wm.meta and
+                    getattr(state.wm.meta, "ai_mode", "off") == "realtime"):
+                state._init_analysis_queue()
+            d.event_bus.publish("workspace.changed", _meta_to_dict(state))
+
+        return {
+            "old_path": str(old_path),
+            "new_path": str(new_path),
+            "was_active": was_active,
+        }
+
 
 def _register_pipeline_methods(d: Dispatcher, state: _ServerState) -> None:
 

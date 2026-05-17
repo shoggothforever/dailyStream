@@ -308,6 +308,57 @@ public final class AppState: ObservableObject {
         await openWorkspaceAt(URL(fileURLWithPath: path))
     }
 
+    /// Move the workspace at ``workspacePath`` (or the active one when
+    /// ``workspacePath`` is nil) into ``targetParent``.
+    ///
+    /// On the same volume the underlying RPC uses an atomic ``rename``
+    /// which finishes in milliseconds; cross-volume moves transparently
+    /// fall back to copy-then-verify-then-delete.  When the workspace
+    /// is currently active the core ends it, moves the directory, and
+    /// reopens it at the new location — so the user sees a brief
+    /// `workspace.changed` flicker but never has to manually reopen.
+    public func moveWorkspace(
+        to targetParent: URL,
+        workspacePath: String? = nil,
+        force: Bool = false
+    ) async {
+        struct Params: Encodable, Sendable {
+            let target_parent: String
+            let workspace_path: String?
+            let force: Bool
+        }
+        struct Result: Decodable {
+            let old_path: String
+            let new_path: String
+            let was_active: Bool
+        }
+
+        do {
+            let r: Result = try await bridge.call(
+                "workspace.move",
+                params: Params(
+                    target_parent: targetParent.path,
+                    workspace_path: workspacePath,
+                    force: force
+                )
+            )
+            // After a successful move the core publishes
+            // ``workspace.changed`` itself, so the menu refreshes
+            // automatically.  Just surface a toast and remember the
+            // new path for quick-reopen.
+            lastWorkspacePath = r.new_path
+            await refreshStatus()
+            showToast(
+                title: r.was_active
+                    ? "Workspace moved & reopened"
+                    : "Workspace moved",
+                subtitle: URL(fileURLWithPath: r.new_path).lastPathComponent
+            )
+        } catch {
+            showError(title: "Move failed", error: error)
+        }
+    }
+
     /// Fetch structured timeline data for the Daily Review window
     /// (legacy single-shot payload — still used by the manual
     /// ``showDailyReview`` menu item).

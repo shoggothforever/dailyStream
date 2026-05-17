@@ -7,6 +7,7 @@ so these tests don't touch the real user home.
 import io
 import json
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -92,6 +93,79 @@ class TestWorkspaceLifecycle:
         d, _, _ = build_dispatcher()
         r = d.handle(_rpc("workspace.list_recent"))
         assert r["result"] == []
+
+    def test_move_active_requires_force(self, tmp_config_dir, tmp_path):
+        """Active workspaces refuse to move without ``force=True`` so the
+        UI can confirm with the user before ending+reopening."""
+        d, _, _ = build_dispatcher()
+        d.handle(_rpc("workspace.create", {
+            "path": str(tmp_path), "title": "active-move",
+        }))
+        archive = tmp_path / "archive"
+        archive.mkdir()
+
+        r = d.handle(_rpc("workspace.move", {
+            "target_parent": str(archive),
+        }))
+        assert r["error"]["code"] == -32001  # StateConflict
+
+    def test_move_active_with_force_reopens_at_new_path(
+        self, tmp_config_dir, tmp_path,
+    ):
+        d, _, _ = build_dispatcher()
+        d.handle(_rpc("workspace.create", {
+            "path": str(tmp_path), "title": "active-move",
+        }))
+        # Status before
+        before = d.handle(_rpc("workspace.status"))
+        old_dir = before["result"]["workspace_dir"]
+
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        r = d.handle(_rpc("workspace.move", {
+            "target_parent": str(archive),
+            "force": True,
+        }))
+        assert "result" in r, r
+        new_path = r["result"]["new_path"]
+        assert r["result"]["was_active"] is True
+        assert r["result"]["old_path"] == old_dir
+
+        # Workspace is back to active at the new location.
+        status = d.handle(_rpc("workspace.status"))["result"]
+        assert status["is_active"] is True
+        assert status["workspace_dir"] == new_path
+        # Disk: original gone, destination present.
+        assert not Path(old_dir).exists()
+        assert (Path(new_path) / "workspace_meta.json").exists()
+
+    def test_move_inactive_workspace_by_path(self, tmp_config_dir, tmp_path):
+        """Move an *ended* workspace identified by ``workspace_path``."""
+        d, _, _ = build_dispatcher()
+        d.handle(_rpc("workspace.create", {
+            "path": str(tmp_path), "title": "ended-move",
+        }))
+        ws_dir = d.handle(_rpc("workspace.status"))["result"]["workspace_dir"]
+        d.handle(_rpc("workspace.end"))
+
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        r = d.handle(_rpc("workspace.move", {
+            "target_parent": str(archive),
+            "workspace_path": ws_dir,
+        }))
+        assert r["result"]["was_active"] is False
+        assert not Path(ws_dir).exists()
+        assert Path(r["result"]["new_path"]).exists()
+
+    def test_move_target_parent_must_exist(self, tmp_config_dir, tmp_path):
+        d, _, _ = build_dispatcher()
+        d.handle(_rpc("workspace.create", {"path": str(tmp_path)}))
+        r = d.handle(_rpc("workspace.move", {
+            "target_parent": str(tmp_path / "nowhere"),
+            "force": True,
+        }))
+        assert r["error"]["code"] == -32602  # InvalidParams
 
 
 class TestPipelineMethods:
