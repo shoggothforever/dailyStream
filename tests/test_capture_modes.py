@@ -236,15 +236,22 @@ class _StubWM:
 
 @pytest.fixture()
 def stub_capture(monkeypatch, tmp_path):
-    """Replace capture.take_screenshot / save_clipboard_image with fakes."""
+    """Replace capture.take_screenshot / save_clipboard_image with fakes.
+
+    The fakes accept ``**kwargs`` so they transparently tolerate
+    forward-compatible options (``compress``, ``compress_quality``,
+    etc.) that the real capture layer grew later — the executor just
+    forwards whatever it has from the config, and the test doesn't
+    care about those values.
+    """
     def _fake_screenshot(save_dir, mode="interactive", region=None,
-                         no_cursor=False):
+                         no_cursor=False, **_kwargs):
         p = save_dir / "fake.png"
         save_dir.mkdir(parents=True, exist_ok=True)
         p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
         return p
 
-    def _fake_clip(save_dir):
+    def _fake_clip(save_dir, **_kwargs):
         p = save_dir / "fake_clip.png"
         save_dir.mkdir(parents=True, exist_ok=True)
         p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
@@ -484,7 +491,7 @@ class TestExecutor:
         seen: dict = {}
 
         def _spy(save_dir, mode="interactive", region=None,
-                 no_cursor=False):
+                 no_cursor=False, **_kwargs):
             seen["no_cursor"] = no_cursor
             seen["mode"] = mode
             p = save_dir / "fake.png"

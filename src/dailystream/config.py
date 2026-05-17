@@ -25,6 +25,20 @@ class Config:
     hotkey_clipboard: str = "<ctrl>+<shift>+v"
     screenshot_mode: str = "interactive"  # "interactive" | "fullscreen"
     screenshot_save_path: str = ""  # Custom screenshot save location. Empty = <workspace>/screenshots/
+
+    # --- Screenshot compression --------------------------------------
+    # When on, freshly-captured PNGs (from ``screencapture`` and from
+    # clipboard image paste) are transcoded to JPEG on disk right after
+    # capture.  Typical savings: 2-5 MB PNG → 300-800 KB JPEG, with no
+    # visible quality loss at quality=85.
+    #
+    # The original resolution is preserved — we only change the codec,
+    # not the pixel dimensions, so Retina detail is intact.
+    #
+    # Requires Pillow.  Without Pillow the capture is saved as PNG
+    # regardless of this setting (a one-time warning is logged).
+    screenshot_compress: bool = True
+    screenshot_compress_quality: int = 85  # JPEG quality, 1-100
     # Predefined screenshot regions.
     # Each item: {"name": "...", "region": "x,y,w,h", "hotkey": "<cmd>+3"}
     # "hotkey" is optional — when set, pressing that key combo captures the

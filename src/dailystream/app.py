@@ -604,6 +604,8 @@ class DailyStreamApp(rumps.App):
                     save_dir,
                     mode=self.config.screenshot_mode,
                     region=region,
+                    compress=self.config.screenshot_compress,
+                    compress_quality=self.config.screenshot_compress_quality,
                 )
                 if path is None:
                     return  # user cancelled screencapture
@@ -662,7 +664,11 @@ class DailyStreamApp(rumps.App):
         actual_content = content
         if content == CLIPBOARD_IMAGE_MARKER:
             save_dir = self.pm.get_screenshots_dir(pipeline)
-            img_path = save_clipboard_image(save_dir)
+            img_path = save_clipboard_image(
+                save_dir,
+                compress=self.config.screenshot_compress,
+                compress_quality=self.config.screenshot_compress_quality,
+            )
             if img_path:
                 actual_content = str(img_path)
                 content_type = "image"

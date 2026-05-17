@@ -100,6 +100,8 @@ Use `config.example.json` as a template. Supported options:
 | `hotkey_clipboard` | `<cmd>+2` | Hotkey string | Global hotkey to capture clipboard content |
 | `screenshot_mode` | `interactive` | `interactive`, `fullscreen` | `interactive`: let user select region; `fullscreen`: capture entire screen |
 | `screenshot_save_path` | `` | Path string | Custom screenshot save directory. Empty = `<workspace>/screenshots/` |
+| `screenshot_compress` | `true` | Bool | Transcode captured PNGs to JPEG on disk (resolution preserved). Typical saving: 5–10× smaller files. Requires Pillow; falls back to PNG when unavailable. |
+| `screenshot_compress_quality` | `85` | 1–100 | JPEG quality when `screenshot_compress` is on. |
 | `screenshot_presets` | `null` | Array of `{name, region, hotkey?}` | Predefined capture regions with optional hotkeys (see below) |
 | `default_workspace_path` | `` | Path string | Default directory for workspaces (optional) |
 | `note_sync_backend` | `markdown` | `markdown`, `obsidian`, `both`, `none` | Where to sync captured content |
@@ -172,6 +174,20 @@ The `📸 Screenshot` menu item becomes a **submenu** listing all your presets:
 Pressing the **screenshot hotkey** (`<cmd>+1` by default) defaults to free selection mode.
 
 **How to find coordinates**: `x,y` is the top-left corner in screen pixels; `w,h` is the width and height. The easiest way is to use `➕ Create Preset...` which captures coordinates automatically.
+
+### Compressing existing screenshots
+
+Enabling `screenshot_compress` (the default) only affects **new** captures.  To reclaim space from PNGs captured before compression was turned on, run the one-shot migration script:
+
+```bash
+# Dry-run: prints how much space each workspace would save
+python scripts/compress_existing_screenshots.py --root ~/Desktop/dailyStream
+
+# Apply for real (also rewrites pipeline context.json + stream.md links)
+python scripts/compress_existing_screenshots.py --root ~/Desktop/dailyStream --commit
+```
+
+The script transcodes every PNG referenced by a pipeline entry to JPEG (resolution preserved), updates the entry's recorded path, and regenerates `stream.md` so every link points at the new filename.  Failures leave the original PNG untouched — nothing is deleted unless the JPEG was written successfully.
 
 ## License
 

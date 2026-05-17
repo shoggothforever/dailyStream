@@ -19,11 +19,16 @@ dependencies = [
 test = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
+    "Pillow>=10.0",  # required by capture/compression tests
 ]
 ai = [
     "anthropic>=0.30",
     "Pillow>=10.0",
 ]
+# Screenshot JPEG compression (screenshot_compress=on in config.json)
+# also requires Pillow — install the ``ai`` extra or Pillow directly.
+# Without Pillow, captures fall back to uncompressed PNG and a warning
+# is logged once.
 # Legacy rumps-based menu-bar app (deprecated; will be removed in 0.5).
 # Install only if you rely on `dailystream app`; the replacement is
 # the Swift DailyStream.app bundle (see apps/DailyStreamMac/).

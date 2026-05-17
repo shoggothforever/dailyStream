@@ -312,3 +312,188 @@ class TestOverlayViewLazySingleton:
         """_overlay_result should be a mutable list (shared state)."""
         assert isinstance(_overlay_result, list)
         assert len(_overlay_result) == 1
+
+
+# ── JPEG compression helper ──────────────────────────────────────────
+
+try:
+    from PIL import Image as _PILImage
+    _PIL_AVAILABLE = True
+except ImportError:
+    _PIL_AVAILABLE = False
+
+
+@pytest.mark.skipif(not _PIL_AVAILABLE, reason="Pillow required")
+class TestCompressToJpeg:
+    """Round-trip tests for the PNG → JPEG transcoder."""
+
+    def _write_png(self, path: Path, size: tuple[int, int] = (200, 150)) -> None:
+        """Write a small deterministic PNG for the test to transcode."""
+        img = _PILImage.new("RGB", size, color=(128, 64, 32))
+        img.save(path, format="PNG")
+
+    def test_png_transcoded_and_original_removed(self, tmp_path):
+        from dailystream.capture import _try_compress_to_jpeg
+        png = tmp_path / "shot.png"
+        self._write_png(png)
+        assert png.exists()
+
+        jpeg = _try_compress_to_jpeg(png, quality=85)
+
+        assert jpeg is not None
+        assert jpeg.suffix == ".jpg"
+        assert jpeg.exists()
+        assert not png.exists()  # original deleted
+        # The JPEG should be smaller than the PNG for anything beyond
+        # a trivial solid-colour patch — our 200×150 sample clears it.
+        assert jpeg.stat().st_size > 0
+
+    def test_resolution_preserved(self, tmp_path):
+        from dailystream.capture import _try_compress_to_jpeg
+        png = tmp_path / "shot.png"
+        self._write_png(png, size=(640, 480))
+
+        jpeg = _try_compress_to_jpeg(png, quality=85)
+        assert jpeg is not None
+
+        with _PILImage.open(jpeg) as out:
+            assert out.size == (640, 480)
+
+    def test_rgba_input_flattened(self, tmp_path):
+        """PNGs with alpha should be converted to RGB (JPEG has no alpha)."""
+        from dailystream.capture import _try_compress_to_jpeg
+        png = tmp_path / "alpha.png"
+        _PILImage.new("RGBA", (80, 60), color=(100, 200, 50, 128)).save(png)
+
+        jpeg = _try_compress_to_jpeg(png)
+        assert jpeg is not None
+        with _PILImage.open(jpeg) as out:
+            assert out.mode == "RGB"
+
+    def test_missing_source_fails_cleanly(self, tmp_path):
+        from dailystream.capture import _try_compress_to_jpeg
+        ghost = tmp_path / "does-not-exist.png"
+        assert _try_compress_to_jpeg(ghost) is None
+
+    def test_failure_keeps_original(self, tmp_path, monkeypatch):
+        """If Pillow fails mid-way, the source PNG must still exist."""
+        from dailystream import capture as capture_mod
+        png = tmp_path / "shot.png"
+        self._write_png(png)
+
+        # Force Image.open to raise after the file write begins.
+        class _BoomImage:
+            def __enter__(self):
+                raise RuntimeError("boom")
+            def __exit__(self, *a):
+                return False
+        class _BoomPIL:
+            @staticmethod
+            def open(_p):
+                return _BoomImage()
+
+        monkeypatch.setitem(
+            __import__("sys").modules, "PIL",
+            type("PIL", (), {"Image": _BoomPIL}),
+        )
+        result = capture_mod._try_compress_to_jpeg(png)
+
+        assert result is None
+        assert png.exists()  # original preserved
+        assert not png.with_suffix(".jpg").exists()
+
+
+class TestCompressToJpegNoPillow:
+    def test_returns_none_when_pillow_missing(self, tmp_path, monkeypatch):
+        """Without Pillow the helper should degrade gracefully."""
+        from dailystream import capture as capture_mod
+        # Reset the one-shot warning flag so the test is deterministic.
+        monkeypatch.setattr(capture_mod, "_pillow_missing_warned", False)
+
+        # Simulate "PIL not importable" by injecting an import hook.
+        import builtins
+        real_import = builtins.__import__
+
+        def blocked_import(name, *args, **kwargs):
+            if name == "PIL" or name.startswith("PIL."):
+                raise ImportError("PIL blocked for test")
+            return real_import(name, *args, **kwargs)
+
+        png = tmp_path / "shot.png"
+        png.write_bytes(b"fake-png")
+
+        monkeypatch.setattr(builtins, "__import__", blocked_import)
+        result = capture_mod._try_compress_to_jpeg(png)
+
+        assert result is None
+        # Original is kept so the caller can still return it.
+        assert png.exists()
+
+
+# ── take_screenshot / save_clipboard_image: compress forwarding ──────
+
+@pytest.mark.skipif(not _PIL_AVAILABLE, reason="Pillow required")
+class TestCaptureCompressIntegration:
+    """End-to-end: fake screencapture output + compress=True → .jpg."""
+
+    def test_screenshot_with_compress_returns_jpeg(self, tmp_path):
+        save_dir = tmp_path / "screenshots"
+
+        def fake_run(cmd, **kwargs):
+            save_dir.mkdir(parents=True, exist_ok=True)
+            # Write a real PNG so Pillow can actually read it.
+            path = Path(cmd[-1])
+            _PILImage.new("RGB", (320, 240), color=(0, 128, 255)).save(path)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        with patch("dailystream.capture.subprocess.run", side_effect=fake_run):
+            result = take_screenshot(
+                save_dir, mode="fullscreen",
+                compress=True, compress_quality=85,
+            )
+
+        assert result is not None
+        assert result.suffix == ".jpg"
+        assert result.exists()
+        # The PNG sibling must be gone.
+        assert not result.with_suffix(".png").exists()
+
+    def test_screenshot_without_compress_stays_png(self, tmp_path):
+        save_dir = tmp_path / "screenshots"
+
+        def fake_run(cmd, **kwargs):
+            save_dir.mkdir(parents=True, exist_ok=True)
+            path = Path(cmd[-1])
+            path.write_bytes(b"PNG_DATA")
+            return subprocess.CompletedProcess(cmd, 0)
+
+        with patch("dailystream.capture.subprocess.run", side_effect=fake_run):
+            result = take_screenshot(save_dir, mode="fullscreen")
+
+        assert result is not None
+        assert result.suffix == ".png"
+
+    def test_clipboard_image_with_compress_returns_jpeg(self, tmp_path):
+        save_dir = tmp_path / "screenshots"
+
+        def fake_run(cmd, **kwargs):
+            save_dir.mkdir(parents=True, exist_ok=True)
+            # osascript writes the PNG to the literal path embedded in
+            # the script; the simplest faithful mock is to grep the
+            # last arg for the destination and write a valid PNG there.
+            script = cmd[-1]
+            # Extract the path from the AppleScript string.
+            import re
+            m = re.search(r'writeToFile:"([^"]+)"', script)
+            assert m, "mock could not find destination in script"
+            _PILImage.new("RGB", (160, 120), color=(200, 0, 0)).save(m.group(1))
+            return subprocess.CompletedProcess(cmd, 0, stdout="ok")
+
+        with patch("dailystream.capture.subprocess.run", side_effect=fake_run):
+            result = save_clipboard_image(
+                save_dir, compress=True, compress_quality=85,
+            )
+
+        assert result is not None
+        assert result.suffix == ".jpg"
+        assert result.exists()

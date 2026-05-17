@@ -671,9 +671,18 @@ def _acquire_source(source: Source, ctx: ExecutionContext,
     save_dir = ctx.pm.get_screenshots_dir()
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    # Look up the screenshot-compression settings once; they may be
+    # absent when ``ctx.config`` isn't wired up (e.g. in some tests),
+    # in which case we fall back to uncompressed PNG.
+    cfg = ctx.config
+    compress = bool(getattr(cfg, "screenshot_compress", False)) if cfg else False
+    compress_q = int(getattr(cfg, "screenshot_compress_quality", 85)) if cfg else 85
+
     if source.kind == SourceKind.CLIPBOARD:
         from ..capture import save_clipboard_image
-        return save_clipboard_image(save_dir)
+        return save_clipboard_image(
+            save_dir, compress=compress, compress_quality=compress_q,
+        )
 
     # Screen capture family
     from ..capture import take_screenshot
@@ -683,15 +692,18 @@ def _acquire_source(source: Source, ctx: ExecutionContext,
             return None
         return take_screenshot(
             save_dir, region=source.region, no_cursor=hide_cursor,
+            compress=compress, compress_quality=compress_q,
         )
     if source.kind == SourceKind.FULLSCREEN:
         return take_screenshot(
             save_dir, mode="fullscreen", no_cursor=hide_cursor,
+            compress=compress, compress_quality=compress_q,
         )
     # WINDOW falls back to interactive until we ship a dedicated
     # window-picker overlay.
     return take_screenshot(
         save_dir, mode="interactive", no_cursor=hide_cursor,
+        compress=compress, compress_quality=compress_q,
     )
 
 

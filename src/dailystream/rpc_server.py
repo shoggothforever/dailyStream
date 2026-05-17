@@ -489,7 +489,11 @@ def _register_capture_methods(d: Dispatcher, state: _ServerState) -> None:
         from .capture import take_screenshot
 
         save_dir = state.pm.get_screenshots_dir()
-        path = take_screenshot(save_dir, mode=mode, region=region)
+        path = take_screenshot(
+            save_dir, mode=mode, region=region,
+            compress=state.config.screenshot_compress,
+            compress_quality=state.config.screenshot_compress_quality,
+        )
         if path is None:
             raise StateConflict("Screenshot cancelled or failed")
         return {"path": str(path)}
@@ -526,7 +530,11 @@ def _register_capture_methods(d: Dispatcher, state: _ServerState) -> None:
         from .capture import save_clipboard_image
 
         save_dir = state.pm.get_screenshots_dir()
-        path = save_clipboard_image(save_dir)
+        path = save_clipboard_image(
+            save_dir,
+            compress=state.config.screenshot_compress,
+            compress_quality=state.config.screenshot_compress_quality,
+        )
         if path is None:
             raise NotFound("No image in clipboard")
         return {"path": str(path)}

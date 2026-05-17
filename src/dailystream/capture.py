@@ -11,6 +11,75 @@ from .config import now_filename, CLIPBOARD_IMAGE_MARKER
 logger = logging.getLogger(__name__)
 
 
+# --- JPEG compression helper -----------------------------------------
+
+# Emit the "Pillow not installed" warning only once per process so
+# users aren't spammed on every capture.
+_pillow_missing_warned = False
+
+
+def _try_compress_to_jpeg(
+    png_path: Path, quality: int = 85
+) -> Optional[Path]:
+    """Transcode ``png_path`` to JPEG next to it and delete the PNG.
+
+    Returns the new ``.jpg`` path on success, or ``None`` if Pillow is
+    unavailable or anything goes wrong.  The original PNG is kept on
+    any failure so callers never lose data.
+
+    Resolution is preserved exactly — only the codec changes.  That
+    trades a small amount of quality for a ~5-10× smaller file, which
+    is plenty to bring a retina-sized ``screencapture`` output from
+    ~3 MB down to ~400 KB.
+    """
+    try:
+        from PIL import Image as PILImage
+    except ImportError:
+        global _pillow_missing_warned
+        if not _pillow_missing_warned:
+            logger.warning(
+                "screenshot_compress=on but Pillow is not installed; "
+                "screenshots will be saved as PNG.  Install with "
+                "'pip install dailystream[ai]' or 'pip install Pillow' "
+                "to enable compression."
+            )
+            _pillow_missing_warned = True
+        return None
+
+    jpeg_path = png_path.with_suffix(".jpg")
+    try:
+        with PILImage.open(png_path) as img:
+            # JPEG doesn't support alpha.  screencapture always writes
+            # opaque images so this is a safe flatten.
+            if img.mode in ("RGBA", "LA", "P"):
+                img = img.convert("RGB")
+            img.save(
+                jpeg_path,
+                format="JPEG",
+                quality=quality,
+                optimize=True,
+                progressive=True,
+            )
+    except Exception as e:  # noqa: BLE001
+        # Keep the PNG on any failure so the user never loses a shot.
+        logger.warning("JPEG transcode failed (%s); keeping PNG: %s",
+                       e, png_path)
+        try:
+            jpeg_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+    # Transcode succeeded — remove the PNG.  If unlink fails (e.g.
+    # read-only FS) we still return the JPEG path, but we log so the
+    # user can clean up the duplicate later.
+    try:
+        png_path.unlink()
+    except OSError as e:
+        logger.warning("Could not remove source PNG after compress: %s", e)
+    return jpeg_path
+
+
 # --- Module-level ObjC overlay class (registered once) ---
 
 _OverlayView = None  # lazily created on first use
@@ -172,6 +241,8 @@ def take_screenshot(
     mode: str = "interactive",
     region: Optional[str] = None,
     no_cursor: bool = False,
+    compress: bool = False,
+    compress_quality: int = 85,
 ) -> Optional[Path]:
     """Call macOS screencapture to capture screenshot.
 
@@ -184,6 +255,12 @@ def take_screenshot(
         no_cursor: When True, add ``-C`` so the mouse pointer is omitted
                 from the captured image (matches the system
                 ``hide_cursor`` attachment).
+        compress: When True, transcode the PNG screencapture output to
+                JPEG on disk (resolution preserved).  Requires Pillow;
+                if unavailable the original PNG is kept and a one-time
+                warning is logged.  Default ``False`` for backwards
+                compatibility with callers that still expect PNG.
+        compress_quality: JPEG quality 1-100 when ``compress`` is on.
 
     Saves to save_dir with a timestamped filename.
     Returns the screenshot path, or None if user cancelled.
@@ -220,6 +297,10 @@ def take_screenshot(
     # screencapture returns 0 on success, 1 on explicit failure.  User
     # cancel in interactive mode returns 0 with no file.
     if save_path.exists() and save_path.stat().st_size > 0:
+        if compress:
+            jpeg = _try_compress_to_jpeg(save_path, quality=compress_quality)
+            if jpeg is not None:
+                return jpeg
         return save_path
 
     # Something went wrong — leave a breadcrumb so users can diagnose.
@@ -278,8 +359,18 @@ def grab_clipboard() -> Tuple[Optional[str], str]:
     return None, "text"
 
 
-def save_clipboard_image(save_dir: Path) -> Optional[Path]:
-    """Save clipboard image to a file. Returns path or None."""
+def save_clipboard_image(
+    save_dir: Path,
+    compress: bool = False,
+    compress_quality: int = 85,
+) -> Optional[Path]:
+    """Save clipboard image to a file. Returns path or None.
+
+    When ``compress`` is on, the PNG written from the pasteboard is
+    transcoded to JPEG (resolution preserved) to match
+    ``take_screenshot``'s behaviour.  Pillow-less environments keep
+    the PNG — see :func:`_try_compress_to_jpeg`.
+    """
     save_dir.mkdir(parents=True, exist_ok=True)
     filename = f"clipboard_{now_filename()}.png"
     save_path = save_dir / filename
@@ -304,6 +395,12 @@ def save_clipboard_image(save_dir: Path) -> Optional[Path]:
             timeout=10,
         )
         if save_path.exists():
+            if compress:
+                jpeg = _try_compress_to_jpeg(
+                    save_path, quality=compress_quality
+                )
+                if jpeg is not None:
+                    return jpeg
             return save_path
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
